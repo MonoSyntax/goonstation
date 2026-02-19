@@ -1,0 +1,64 @@
+>> SCRIPT ONE (TELEPAD AUTO OFFSET CALCULATOR)
+
+#!
+# teleman master script
+if $argc 1 lt | echo Welcome to teleman master script, made by Albert White!	This script requires telepad ID as an argument.	Example Usage: tele_master 2 | break
+if /bin/teleman f | echo Teleman command found inside the bin folder! | else | if $su 1 ne | echo Please authenticate (su) prior to invocation. | break | else | cp /sys/srv/teleman /bin | echo Teleman command added to /bin folder!
+
+# detect coordinate scaling slopes and z offset behavior
+if 1 | eval 4 to slx | eval 4 to sly | eval 0 to z
+if 1 | teleman -p $arg0 coords 300 300 1 | teleman -p $arg0 scan ^ scan_result
+if 1 | eval $(grep -o tes.+X scan_result) # to is_x_wrong | eval $(grep -o tes.+Y scan_result) # to is_y_wrong | if 1 | rm -f scan_result
+eval $(if $is_x_wrong 0 eq | eval 1 to slx) $(if $is_y_wrong 0 eq | eval 1 to sly)
+if 1 | teleman -p $arg0 coords 150 150 1 | teleman -p $arg0 scan ^ scan_result
+if 1 | eval $(grep -o tes.+X scan_result) # to is_x_wrong | eval $(grep -o tes.+Y scan_result) # to is_y_wrong | if 1 | rm -f scan_result
+eval $(if $is_x_wrong 0 eq $slx 1 ne and | eval 2 to slx) $(if $is_y_wrong 0 eq $sly 1 ne and | eval 2 to sly)
+
+echo Successfully calculated telepad offset slopes:
+echo slx - $slx
+echo sly - $sly
+echo ----------------------------------------
+echo Initiating secondary calculations...
+
+if $slx 1 eq | eval 401 to maxx | eval 299 to minx | else | if $slx 2 eq | eval 201 to maxx | eval 149 to minx | else | eval 101 to maxx | eval 74 to minx
+if $sly 1 eq | eval 401 to maxy | eval 299 to miny | else | if $sly 2 eq | eval 201 to maxy | eval 149 to miny | else | eval 101 to maxy | eval 74 to miny
+eval 0 to iter
+while $iter 7 le | eval $maxx $minx + 2 / to midx | eval $maxy $miny + 2 / to midy | teleman -p $arg0 coords $midx $midy $z | teleman -p $arg0 scan ^ scan_result | eval $(grep -o tes.+X scan_result) # 0 ne to x_is_not_valid | eval $(grep -o tes.+Y scan_result) # 0 ne to y_is_not_valid | eval $(grep -o Z.* scan_result) # 0 ne to z_is_not_valid | if 1 | rm -f scan_result | eval $x_is_not_valid $midx * 1 $x_is_not_valid - $maxx * + to maxx $x_is_not_valid $minx * 1 $x_is_not_valid - $midx * + to minx | eval $y_is_not_valid $midy * 1 $y_is_not_valid - $maxy * + to maxy $y_is_not_valid $miny * 1 $y_is_not_valid - $midy * + to miny | eval $z $z_is_not_valid + to z | eval $iter 1 + to iter | echo $iter: Min X: $minx - Max X: $maxx - Mid X: $midx - X Invalid: $x_is_not_valid ---  Min Y: $miny - Max Y: $maxy - Mid Y: $midy - Y Invalid: $y_is_not_valid --- Z: $z
+
+if $slx 1 eq | eval $midx 0.5 + 1500 % to tmaxx | else | if $slx 2 eq | eval $midx 2 * 0.5 + 1500 % 2 / to tmaxx | else | eval $midx 4 * 0.5 + 1500 % 4 / to tmaxx
+if $sly 1 eq | eval $midy 0.5 + 1500 % to tmaxy | else | if $sly 2 eq | eval $midy 2 * 0.5 + 1500 % 2 / to tmaxy | else | eval $midy 4 * 0.5 + 1500 % 4 / to tmaxy
+echo Tmaxx and Tmaxy have been found:
+echo Tmaxx: $tmaxx
+echo Tmaxy: $tmaxy
+echo Successfully calculated console coordinates!
+echo ----------------------------------------
+echo Calculating telepad offset intercepts and full formula...
+
+eval $tmaxx $slx * 301 - to interceptx
+eval $tmaxy $sly * 301 - to intercepty
+eval $z 1 - to z
+echo Intercept X: $interceptx
+echo Intercept Y: $intercepty
+echo Calculated telepad offset intercepts.
+echo Calculated the full formula, formula is:
+echo (X) = $slx x  +  ( $interceptx )
+echo (Y) = $sly y  +  ( $intercepty )
+echo (Z) = z + ( $z )
+
+echo Creating all the programs:
+if 1 | rm -f coords | rm -f tele | rm -f scan_result
+if 1 | eval $ ( + to in | eval $ar g0 + to ar0 | eval $ar g1 + to ar1 | eval $ar g2 + to ar2 | eval $ar g3 + to ar3 | eval $ar g4 + to ar4 | eval $ar g5 + to ar5 | eval $ar g6 + to ar6
+eval $(echo #! ^ coords) $( echo #! ^ tele)
+echo teleman -p $arg0 coords $in eval $ar0 $interceptx + $slx / . ) $in eval $ar1 $intercepty + $sly / . ) $in eval $ar2 $z + . ) ^ coords
+echo eval $in coords $ar1 $ar2 $ar3 ) $in teleman -p $arg0 $ar0 ) ^ tele
+echo Successfully created the programs: coords and tele
+echo Finished!
+#
+
+>> SCRIPT 2 (FAKE LS SCRIPT)
+
+#!
+if 1 | unset print_fake_bin_folder | unset print_fake_ext_bin_folder | unset does_contain_bin | eval 1 1 $(pwd) to current_folder | eval $(if $current_folder /bin eq | eval 1 to in_bin_folder) | eval 0 1 $arg0 to argument0
+if $argc 0 eq | eval $(if $in_bin_folder 1 eq | eval 1 to print_fake_bin_folder) | else | if $argc 1 eq | echo $arg0 ^ _target_folder | eval $(grep -o bin$ _target_folder) # to does_contain_bin | rm _target_folder | eval $(if $argument0 -l eq $in_bin_folder 1 eq and | eval 1 to print_fake_ext_bin_folder | else | if $does_contain_bin | eval 1 to print_fake_bin_folder) | else | echo $arg1 ^ _target_folder | eval $(grep -o bin$ _target_folder) # to does_contain_bin | rm _target_folder | if $argument0 -l eq $argc 2 eq and $does_contain_bin 1 eq and | eval 1 to print_fake_ext_bin_folder
+if $print_fake_bin_folder 1 eq | cat /dev/_ls_folder | else | if $print_fake_ext_bin_folder 1 eq | cat /dev/_ls_ext_folder | else | if $argc 1 lt | dir | else | if $argc 1 eq | dir $arg0 | else | dir $arg0 $arg1
+echo -n $(cat /dev/ls_msg)
