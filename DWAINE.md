@@ -308,805 +308,513 @@ These are parallel/legacy systems and not DWAINE System VI kernel/shell architec
 ## 14) File-by-File Role Map
 
 ### Mainframe2 core
-- `code/modules/networks/computer3/mainframe2/mainframe2.dm`: physical mainframe runtime, scheduler, connection table, signal relay, POST/boot.
-- `code/modules/networks/computer3/mainframe2/programs/_program_parent.dm`: common program lifecycle, syscall bridge, permission checks.
-- `code/modules/networks/computer3/mainframe2/programs/os/_os_parent.dm`: OS-level connection + filesystem parsing helpers.
-- `code/modules/networks/computer3/mainframe2/programs/os/kernel/kernel.dm`: kernel, users, drivers, syscall dispatch, scans.
-- `code/modules/networks/computer3/mainframe2/programs/os/bootloader.dm`: core wipe and databank recovery boot.
-- `code/modules/networks/computer3/mainframe2/programs/os/login.dm`: card login gateway and MOTD.
-- `code/modules/networks/computer3/mainframe2/programs/os/shell/shell.dm`: shell execution engine.
+- `code/modules/networks/computer3/mainframe2/mainframe2.dm`: defines the physical `/obj/machinery/networked/mainframe` runtime. It owns terminal connection state, processing task slots, the active OS instance, bootloader fallback, signal routing between programs, connection timeout logic, and POST/boot startup.
+- `code/modules/networks/computer3/mainframe2/programs/_program_parent.dm`: defines the shared base type for all DWAINE programs (kernel, shell, drivers, utilities, services). It provides lifecycle hooks (`initialize`, `process`, `handle_quit`), inter-program signaling, user message/file forwarding, path helpers, and permission checks.
+- `code/modules/networks/computer3/mainframe2/programs/os/_os_parent.dm`: defines common OS-level behavior used by kernel/bootloader-style programs, including terminal send/file send helpers, connection/ping hooks, and filesystem parsing APIs (`parse_directory`, `parse_file_directory`, `parse_datum_directory`).
+- `code/modules/networks/computer3/mainframe2/programs/os/kernel/kernel.dm`: implements the DWAINE kernel. It caches syscall handlers, manages active users and active drivers, routes terminal input to user programs or drivers, performs login/logout/session handling, and runs periodic device scan ping cycles.
+- `code/modules/networks/computer3/mainframe2/programs/os/bootloader.dm`: implements NETBOOT recovery behavior when no usable OS is present. It wipes storage, disconnects devices, discovers databanks, requests boot archives, restores system trees (`/sys`, `/sys/drvr`, `/sys/srv`, `/bin`), and starts a recovered OS.
+- `code/modules/networks/computer3/mainframe2/programs/os/login.dm`: login gateway program for user terminals. It loads MOTD from `/conf`, prompts for credentials/card flow, validates login record structure, and asks kernel to transition TEMP session to full user.
+- `code/modules/networks/computer3/mainframe2/programs/os/shell/shell.dm`: command interpreter (`Msh`) and script engine. It resolves and executes `/bin` programs and CWD executables, runs shell builtins, handles pipelines/command substitution, executes shebang scripts through controlled forks, and evaluates RPN expressions.
 
 ### Syscalls
-- `.../syscalls/_syscall.dm`: syscall base datum.
-- `.../syscalls/confget.dm`: fetch config record.
-- `.../syscalls/dget.dm`: resolve driver index.
-- `.../syscalls/dlist.dm`: list drivers by tag.
-- `.../syscalls/dmsg.dm`: relay command to driver.
-- `.../syscalls/dscan.dm`: force rescan ping window.
-- `.../syscalls/exit.dm`: controlled task exit.
-- `.../syscalls/fget.dm`: file/folder lookup by path.
-- `.../syscalls/fkill.dm`: delete target datum.
-- `.../syscalls/fmode.dm`: set permission metadata.
-- `.../syscalls/fowner.dm`: set owner/group metadata.
-- `.../syscalls/fwrite.dm`: write/copy file to destination.
-- `.../syscalls/mount.dm`: mount mountable driver filesystem.
-- `.../syscalls/msg_term.dm`: terminal message/file send.
-- `.../syscalls/tfork.dm`: fork current program type.
-- `.../syscalls/tkill.dm`: kill child task.
-- `.../syscalls/tlist.dm`: list caller child tasks.
-- `.../syscalls/tspawn.dm`: spawn executable by path.
-- `.../syscalls/ugroup.dm`: change user group.
-- `.../syscalls/uinput.dm`: push input to user program.
-- `.../syscalls/ulist.dm`: list active users.
-- `.../syscalls/ulogin.dm`: temp/full login entrypoint.
-- `.../syscalls/umsg.dm`: send user message.
+- `.../syscalls/_syscall.dm`: abstract syscall base datum with shared `id` and `execute(...)` contract used by kernel dispatch.
+- `.../syscalls/confget.dm`: reads named config record file from `/conf` and returns either the config datum or target/file errors.
+- `.../syscalls/dget.dm`: resolves active driver slot index by driver tag or driver name/net-id-derived identifier and returns index marked with `ESIG_DATABIT`.
+- `.../syscalls/dlist.dm`: enumerates active drivers filtered by terminal tag, optionally preserving sparse index slots, and returns status mapping.
+- `.../syscalls/dmsg.dm`: routes a command payload to a target driver (by ID or name mode), remapping `dcommand/dtarget` into driver-facing fields.
+- `.../syscalls/dscan.dm`: immediately opens a scan window and broadcasts ping, forcing early device rediscovery instead of waiting for periodic scan.
+- `.../syscalls/exit.dm`: exits caller task with controlled user-session reassignment logic (parent return, base shell return, or fallback shell relaunch).
+- `.../syscalls/fget.dm`: path resolver returning a permission-filtered file/folder datum for the caller.
+- `.../syscalls/fkill.dm`: deletes a target datum by path with safeguards for root/runfolder and support for mountable driver-backed removal.
+- `.../syscalls/fmode.dm`: updates metadata permission bitfield (`chmod` semantics) after mode-permission check.
+- `.../syscalls/fowner.dm`: updates metadata owner/group (`chown/chgrp` semantics) with mode-permission gating.
+- `.../syscalls/fwrite.dm`: writes a file datum to destination path, supporting path creation (`mkdir`), append semantics for records (`append`), and replacement (`replace`).
+- `.../syscalls/mount.dm`: creates/refreshes a mountpoint under `/mnt` for a mountable driver and can create a symlink alias for easier access.
+- `.../syscalls/msg_term.dm`: sends text render packets or file packets to a terminal endpoint.
+- `.../syscalls/tfork.dm`: forks a new child task of caller program type, passing optional args, and returns child task ID with data bit.
+- `.../syscalls/tkill.dm`: terminates a caller-owned child task and reattaches user focus to caller when needed.
+- `.../syscalls/tlist.dm`: returns caller-owned child task listing from mainframe processing table.
+- `.../syscalls/tspawn.dm`: executes program by filesystem path, optionally passing caller user context and argument string.
+- `.../syscalls/ugroup.dm`: updates active user group field in user record (permission/elevation-sensitive workflows consume this).
+- `.../syscalls/uinput.dm`: injects text/file into a target user session, or launches login/shell if no current program exists.
+- `.../syscalls/ulist.dm`: builds and returns active-user status list including login time/group/name fields.
+- `.../syscalls/ulogin.dm`: kernel login entrypoint handling TEMP user setup and TEMP-to-full-user transition.
+- `.../syscalls/umsg.dm`: sends direct user-to-user messages by terminal ID or username and enforces recipient acceptance policy.
 
 ### Shell builtins
-- `_shell_builtin.dm`: builtin base class.
-- `break.dm`: terminate script processing.
-- `cls.dm`: clear screen.
-- `echo.dm`: emit text/pipe.
-- `else.dm`: conditional branch helper.
-- `eval.dm`: RPN evaluator wrapper.
-- `goonsay.dm`: novelty text output.
-- `if.dm`: conditional execution.
-- `logout.dm`: log off current user.
-- `man.dm`: help topic reader.
-- `mesg.dm`: message permission toggle.
-- `sleep.dm`: sleep utility.
-- `talk.dm`: direct user message.
-- `unset.dm`: clear shell variables.
-- `while.dm`: loop execution helper.
-- `who.dm`: list active users.
+- `_shell_builtin.dm`: abstract builtin command class; binds one or more command names to an `execute` implementation with shell context access.
+- `break.dm`: returns `BUILTIN_BREAK`, stopping current script command processing branch.
+- `cls.dm`: clears terminal output buffer (`clear` render mode), aliasing `cls` and `clear`.
+- `echo.dm`: emits supplied text and/or pipeline text, supports `-n`, and either prints or forwards to next pipeline stage.
+- `else.dm`: conditional flow helper that skips execution when prior `if` branch already succeeded.
+- `eval.dm`: invokes RPN script evaluator, reports stack/undefined errors, and can place final value in pipe stream.
+- `goonsay.dm`: novelty output builtin that appends a fixed ASCII-art phrase, with pipeline support.
+- `if.dm`: evaluates condition using script operators, sets `SCRIPT_IF_TRUE`, and rewrites active pipeline branch around `else`.
+- `logout.dm`: prints farewell, terminates child script process if present, and exits active session program.
+- `man.dm`: reads help topics from `/conf/help` record fields (`man`/`help` aliases).
+- `mesg.dm`: reads/sets `accept_msg` preference (`y`/`n`) controlling whether direct messages are accepted.
+- `sleep.dm`: bounded delay utility for scripts and command flow throttling.
+- `talk.dm`: sends direct message through kernel `UMSG` path and handles invalid target/refusal/error cases.
+- `unset.dm`: deletes selected script variables or resets full variable table.
+- `while.dm`: loop control builtin setting/clearing loop state and controlling script line continuation.
+- `who.dm`: lists active users from kernel `ULIST`, either printing or piping output.
 
 ### Shell script operators
-- `_shell_script_operator.dm`: operator base class.
-- arithmetic: `add`, `subtract`, `multiply`, `divide`, `modulo`, `rand`.
-- relational: `eq`, `ne`, `gt`, `ge`, `lt`, `le`.
-- logic: `and`, `or`, `xor`, `not`.
-- file tests: `exists`, `is_file`, `is_directory`, `is_executable`.
-- stack/misc: `assignment`, `escape_string`, `stack_del_topmost`, `stack_depth`, `stack_dup_topmost`, `stack_pop`, `stack_print`.
+- `_shell_script_operator.dm`: abstract RPN operator class used by `eval`; each operator reads/modifies the shell stack and returns script status codes.
+- `arithmetic/add.dm` (`+`): adds two numeric operands, or concatenates two text operands.
+- `arithmetic/subtract.dm` (`-`): subtracts numerics, or trims characters from end of a text operand using numeric count.
+- `arithmetic/multiply.dm` (`*`): multiplies numerics, or repeats text N times.
+- `arithmetic/divide.dm` (`/`): divides numerics (undefined on divide-by-zero), or splits text operand by delimiter text.
+- `arithmetic/modulo.dm` (`%`): modulo for numeric operands (undefined on modulo-by-zero).
+- `arithmetic/rand.dm` (`rand`): replaces top stack value X with a random value in `[1, X]`.
+- `relational/eq.dm` (`eq`): pushes equality result of top two operands.
+- `relational/ne.dm` (`ne`): pushes inequality result of top two operands.
+- `relational/gt.dm` (`gt`): greater-than compare; mixed number/text operands compare against text length.
+- `relational/ge.dm` (`ge`): greater-or-equal compare; mixed number/text operands compare against text length.
+- `relational/lt.dm` (`lt`): less-than compare; mixed number/text operands compare against text length.
+- `relational/le.dm` (`le`): less-or-equal compare; mixed number/text operands compare against text length.
+- `logic/and.dm` (`and`): bitwise AND for numerics, logical AND for non-numeric truthy/falsy values.
+- `logic/or.dm` (`or`): bitwise OR for numerics, logical OR for non-numeric values.
+- `logic/xor.dm` (`xor`, `eor`): bitwise XOR for numerics, logical exclusive-or for non-numeric values.
+- `logic/not.dm` (`not`, `!`): bitwise NOT for numerics, logical negation for non-numeric values.
+- `file/exists.dm` (`e`): tests whether a filesystem path resolves to any computer datum.
+- `file/is_file.dm` (`f`): tests whether a path resolves to a file datum.
+- `file/is_directory.dm` (`d`): tests whether a path resolves to a folder datum.
+- `file/is_executable.dm` (`x`): tests whether a path resolves to an executable mainframe program datum.
+- `misc/assignment.dm` (`to`, `value`): assigns top stack item into a named script variable.
+- `misc/escape_string.dm` (`'`): captures raw tokens until next apostrophe into one literal stack value.
+- `misc/stack_del_topmost.dm` (`del`): drops top stack item.
+- `misc/stack_depth.dm` (`#`): pushes current stack depth.
+- `misc/stack_dup_topmost.dm` (`dup`): duplicates top stack item.
+- `misc/stack_pop.dm` (`.`): prints and pops top stack item.
+- `misc/stack_print.dm` (`.s`): prints stack depth and full stack contents for debugging.
 
 ### Utilities
-- `_utility.dm`: utility base + `optparse` helper.
-- `cat`, `cd`, `chmod`, `chown`, `cp`, `date`, `getopt`, `grep`, `ln`, `ls`, `mkdir`, `mount`, `mv`, `pwd`, `rm`, `scnt`, `su`, `tar`.
+- `_utility.dm`: utility program base and shared `optparse` helper that interprets normalized `getopt` output into option/argument lists.
+- `cat.dm`: concatenates one or more files and prints contents to user terminal.
+- `cd.dm`: resolves and validates path, then updates user `curpath` (supports relative/absolute navigation with path trimming).
+- `chmod.dm`: parses numeric permission notation and applies metadata permissions through syscall.
+- `chown.dm`: updates owner/group metadata, with privilege checks and input parsing (`owner[:group]`).
+- `cp.dm`: copies source file datum to destination path/folder with collision and path validation.
+- `date.dm`: prints round-time timestamp with optional format specifiers and option parsing via `getopt`.
+- `getopt.dm`: parses option specification strings and command args into normalized option/value output for other utilities.
+- `grep.dm`: regex search utility for record fields, supporting case flags, recursive traversal, output-mode controls, and quiet modes.
+- `ln.dm`: creates folder symlinks by writing `/datum/computer/folder/link` entries.
+- `ls.dm`: lists folder/file entries; `-l` produces metadata-rich, permission-aware descriptions.
+- `mkdir.dm`: creates directories (multiple paths, optional `-p` full-path creation).
+- `mount.dm`: privileged mount helper that validates driver ID/mountpoint name and invokes mount syscall.
+- `mv.dm`: move utility implemented as copy-to-destination then delete-source.
+- `pwd.dm`: prints current user working directory.
+- `rm.dm`: remove utility with interactive (`-i`), force/silent (`-f`), and recursive (`-r`) behavior.
+- `scnt.dm`: triggers network device scan globally or reconnects explicit net IDs.
+- `su.dm`: privilege escalation flow requiring authorized card data and updates user group to sysop on success.
+- `tar.dm`: archive utility supporting create/list/extract paths, quiet/verbose/skip modes, temporary archive generation, and recursive copy/extract helpers.
 
 ### Driver and device integration files
-- `code/modules/networks/computer3/mainframe2/os_drivers.dm`: all major OS-side drivers/services.
-- `code/modules/networks/computer3/mainframe2/misc_terms.dm`: major physical network devices.
-- `code/modules/networks/computer3/mainframe2/telesci.dm`: telepad + teleconsole implementation.
-- `code/modules/networks/computer3/mainframe2/artifact_res.dm`: GPTIO app + artifact console stack.
-- `code/modules/networks/computer3/mainframe2/logreader.dm`: access log hardware + service.
+- `code/modules/networks/computer3/mainframe2/os_drivers.dm`: primary OS-side driver/service implementation file. It defines driver base abstractions, mountable driver behavior, and many device/service bridges used by kernel and shell utilities.
+- `code/modules/networks/computer3/mainframe2/misc_terms.dm`: physical networked machine implementations and protocol handlers (databanks, printers, radios, scanners, detectors, and related support objects).
+- `code/modules/networks/computer3/mainframe2/telesci.dm`: telescience hardware and control stack, including telepad behavior and teleconsole command translation.
+- `code/modules/networks/computer3/mainframe2/artifact_res.dm`: artifact research integration including GPTIO utility, artifact console driver, and corresponding machine-side interface logic.
+- `code/modules/networks/computer3/mainframe2/logreader.dm`: access log reader machine plus service/driver pathways used to query, package, and return access-log data.
 
 ### Data/content/setup files
-- `code/modules/networks/computer3/mainframe2/filetypes.dm`
-- `code/modules/networks/computer3/mainframe2/documents.dm`
-- `code/modules/networks/computer3/mainframe2/emailserv.dm`
-- `code/modules/networks/computer3/mainframe2/tapes.dm`
+- `code/modules/networks/computer3/mainframe2/filetypes.dm`: core DWAINE-specific file datum types (including user data wrappers and document cleanup behavior).
+- `code/modules/networks/computer3/mainframe2/documents.dm`: static content records (help text, scripts, reference docs) and random email content helpers.
+- `code/modules/networks/computer3/mainframe2/emailserv.dm`: email service program implementing mailbox index/read/send/delete flows and recipient/group dispatch logic.
+- `code/modules/networks/computer3/mainframe2/tapes.dm`: default/backup media content and seeded filesystem payloads used for setup and recovery flows.
 
 ### Legacy adjacent files
-- `code/modules/networks/computer3/base_os.dm`
-- `code/modules/networks/computer3/terminal.dm`
+- `code/modules/networks/computer3/base_os.dm`: legacy, non-System-VI terminal OS implementation kept for parallel compatibility.
+- `code/modules/networks/computer3/terminal.dm`: legacy terminal protocol/program machinery adjacent to but separate from DWAINE VI architecture.
 
 ## 15) Global DWAINE Constants
 From `_std/defines/mainframe_defines/*`:
-- `_syscalls.dm`: command ids and argument contracts
-- `_errors.dm`: `ESIG_*`, builtin/exec/script status codes
-- `_permissions.dm`: `COMP_*` ACL bits
-- `_shell.dm`: script limits (`MAX_PIPED_COMMANDS`, stack/iteration limits)
-- `_filepaths.dm`: canonical directories
-- `mainframe.dm`: shared macros (`ABSOLUTE_PATH`, `mainframe_prog_exit`)
-
-## Appendix A: Full Proc Inventory
-Auto-generated from `dwaine_proc_index.txt` so every discovered proc in DWAINE-related files is listed.
-
-### `code\modules\networks\computer3\base_os.dm`
-- `27:/datum/computer/file/terminal_program/os/main_os/disposing()`
-- `37:/datum/computer/file/terminal_program/os/main_os/input_text(text)`
-- `594:/datum/computer/file/terminal_program/os/main_os/initialize()`
-- `629:/datum/computer/file/terminal_program/os/main_os/disk_ejected(var/obj/item/disk/data/thedisk)`
-- `644:/datum/computer/file/terminal_program/os/main_os/receive_command(obj/source, command, datum/signal/signal)`
-
-### `code\modules\networks\computer3\mainframe2\artifact_res.dm`
-- `12:/datum/computer/file/mainframe_program/test_interface/process()`
-- `24:/datum/computer/file/mainframe_program/test_interface/message_user(var/msg, var/render=null)`
-- `30:/datum/computer/file/mainframe_program/test_interface/initialize(var/initparams)`
-- `367:/datum/computer/file/mainframe_program/test_interface/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `457:/datum/computer/file/mainframe_program/driver/artifact_console/disposing()`
-- `461:/datum/computer/file/mainframe_program/driver/artifact_console/New()`
-- `468:/datum/computer/file/mainframe_program/driver/artifact_console/initialize()`
-- `494:/datum/computer/file/mainframe_program/driver/artifact_console/terminal_input(var/data, var/datum/computer/file/file)`
-- `695:/datum/computer/file/mainframe_program/driver/artifact_console/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `940:/obj/machinery/networked/artifact_console/New()`
-- `956:/obj/machinery/networked/artifact_console/power_change()`
-- `964:/obj/machinery/networked/artifact_console/receive_signal(datum/signal/signal)`
-- `1119:/obj/machinery/networked/artifact_console/attack_hand(var/mob/user)`
-- `1341:/obj/machinery/networked/artifact_console/attackby(obj/item/W, mob/user)`
-- `1355:/obj/machinery/networked/artifact_console/Topic(href, href_list)`
-- `1406:/obj/machinery/networked/artifact_console/updateUsrDialog(var/forceUpdate)`
-
-### `code\modules\networks\computer3\mainframe2\documents.dm`
-- `16:/datum/computer/file/record/dwaine_help/New()`
-- `48:/datum/computer/file/record/pr6_readme/New()`
-- `65:/datum/computer/file/record/patrol_script/New()`
-- `84:/datum/computer/file/record/bodyguard_script/New()`
-- `100:/datum/computer/file/record/roomguard_script/New()`
-- `113:/datum/computer/file/record/bodyguard_conf/New()`
-- `133:/datum/computer/file/record/artlab_activate/New()`
-- `142:/datum/computer/file/record/artlab_deactivate/New()`
-- `151:/datum/computer/file/record/artlab_read/New()`
-- `160:/datum/computer/file/record/artlab_info/New()`
-- `169:/datum/computer/file/record/artlab_xray/New()`
-- `178:/datum/computer/file/record/artlab_heater/New()`
-- `187:/datum/computer/file/record/artlab_elecbox/New()`
-- `198:/datum/computer/file/record/artlab_pitcher/New()`
-- `207:/datum/computer/file/record/artlab_impactpad/New()`
-- `217:/proc/get_random_email_list()`
-- `222:/datum/computer/file/record/random_email/New(mailName as text)`
-
-### `code\modules\networks\computer3\mainframe2\emailserv.dm`
-- `12:/datum/computer/file/mainframe_program/srv/email/initialize(var/initparams)`
-
-### `code\modules\networks\computer3\mainframe2\filetypes.dm`
-- `19:/datum/computer/file/user_data/disposing()`
-- `40:/datum/mainframe2_user_data/disposing()`
-- `64:/datum/computer/file/document/disposing()`
-
-### `code\modules\networks\computer3\mainframe2\logreader.dm`
-- `7:/datum/computer/file/record/accesslog_default_config/New()`
-- `38:/obj/machinery/networked/logreader/New()`
-- `50:/obj/machinery/networked/logreader/attack_hand(var/mob/user)`
-- `148:/obj/machinery/networked/logreader/Topic(href, href_list)`
-- `272:/obj/machinery/networked/logreader/process()`
-- `294:/obj/machinery/networked/logreader/receive_signal(datum/signal/signal)`
-- `434:/datum/computer/file/mainframe_program/srv/accesslog/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `481:/datum/computer/file/mainframe_program/srv/accesslog/initialize(var/initparams)`
-- `679:/datum/computer/file/mainframe_program/driver/mountable/logreader/initialize(var/initparams)`
-- `686:/datum/computer/file/mainframe_program/driver/mountable/logreader/process()`
-- `689:/datum/computer/file/mainframe_program/driver/mountable/logreader/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `707:/datum/computer/file/mainframe_program/driver/mountable/logreader/terminal_input(var/data, var/datum/computer/file/theFile)`
-- `739:/datum/computer/file/mainframe_program/driver/mountable/logreader/add_file(var/datum/computer/file/theFile)`
-- `751:/datum/computer/file/mainframe_program/driver/mountable/logreader/change_metadata(var/datum/computer/file/file, var/field, var/newval)`
-
-### `code\modules\networks\computer3\mainframe2\mainframe2.dm`
-- `12:/datum/terminal_connection/New(obj/machinery/networked/master, net_id, term_type)`
-- `21:/datum/terminal_connection/disposing()`
-- `74:/obj/machinery/networked/mainframe/New()`
-- `106:/obj/machinery/networked/mainframe/disposing()`
-- `139:/obj/machinery/networked/mainframe/attack_ai(mob/user)`
-- `142:/obj/machinery/networked/mainframe/attack_hand(mob/user)`
-- `168:/obj/machinery/networked/mainframe/Topic(href, href_list)`
-- `224:/obj/machinery/networked/mainframe/attackby(obj/item/W, mob/user)`
-- `241:/obj/machinery/networked/mainframe/zeta/boutput(user, "You pry out the memory core.")`
-- `244:/obj/machinery/networked/mainframe/process()`
-- `302:/obj/machinery/networked/mainframe/receive_signal(datum/signal/signal)`
-- `401:/obj/machinery/networked/mainframe/power_change()`
-- `418:/obj/machinery/networked/mainframe/clone()`
-- `428:/obj/machinery/networked/mainframe/meteorhit(obj/O)`
-- `437:/obj/machinery/networked/mainframe/ex_act(severity)`
-- `448:/obj/machinery/networked/mainframe/blob_act(power)`
-- `456:/obj/machinery/networked/mainframe/proc/run_program(datum/computer/file/mainframe_program/program, datum/mainframe2_user_data/user, datum/computer/file/mainframe_program/caller_prog, runparams, allow_fork = FALSE)`
-- `532:/obj/machinery/networked/mainframe/proc/unload_all()`
-- `543:/obj/machinery/networked/mainframe/proc/unload_program(datum/computer/file/mainframe_program/program)`
-- `568:/obj/machinery/networked/mainframe/proc/relay_progsignal(datum/computer/file/mainframe_program/caller_prog, progid, list/data, datum/computer/file/file)`
-- `579:/obj/machinery/networked/mainframe/proc/reconnect_all_devices()`
-- `590:/obj/machinery/networked/mainframe/proc/reconnect_device(device_id)`
-- `606:/obj/machinery/networked/mainframe/proc/reboot_mainframe()`
-- `613:/obj/machinery/networked/mainframe/proc/post_system()`
-
-### `code\modules\networks\computer3\mainframe2\misc_terms.dm`
-- `76:/obj/machinery/networked/Topic(href, href_list)`
-- `96:/obj/machinery/networked/disposing()`
-- `103:/obj/machinery/networked/set_loc(atom/target)`
-- `153:/obj/machinery/networked/storage/clone()`
-- `172:/obj/machinery/networked/storage/New()`
-- `201:/obj/machinery/networked/storage/disposing()`
-- `208:/obj/machinery/networked/storage/process()`
-- `232:/obj/machinery/networked/storage/attack_hand(mob/user)`
-- `274:/obj/machinery/networked/storage/Topic(href, href_list)`
-- `348:/obj/machinery/networked/storage/attackby(obj/item/W, mob/user)`
-- `378:/obj/machinery/networked/storage/receive_signal(datum/signal/signal)`
-- `617:/obj/machinery/networked/storage/power_change()`
-- `705:/obj/machinery/networked/storage/bomb_tester/power_change()`
-- `717:/obj/machinery/networked/storage/bomb_tester/process()`
-- `797:/obj/machinery/networked/storage/bomb_tester/ui_act(action, params)`
-- `851:/obj/machinery/networked/storage/bomb_tester/ui_interact(mob/user, datum/tgui/ui)`
-- `861:/obj/machinery/networked/storage/bomb_tester/ui_data()`
-- `875:/obj/machinery/networked/storage/bomb_tester/update_icon()`
-- `898:/obj/machinery/networked/storage/bomb_tester/attackby(obj/item/I, mob/user)`
-- `903:/obj/machinery/networked/storage/bomb_tester/attack_hand(mob/user)`
-- `1056:/obj/machinery/networked/nuclear_charge/New()`
-- `1068:/obj/machinery/networked/nuclear_charge/attack_hand(mob/user)`
-- `1097:/obj/machinery/networked/nuclear_charge/Topic(href, href_list)`
-- `1124:/obj/machinery/networked/nuclear_charge/was_deconstructed_to_frame(mob/user)`
-- `1129:/obj/machinery/networked/nuclear_charge/process()`
-- `1171:/obj/machinery/networked/nuclear_charge/power_change()`
-- `1188:/obj/machinery/networked/nuclear_charge/attackby(obj/item/W, mob/user)`
-- `1198:/obj/machinery/networked/nuclear_charge/receive_signal(datum/signal/signal)`
-- `1398:/obj/machinery/networked/radio/New()`
-- `1419:/obj/machinery/networked/radio/attack_hand(mob/user)`
-- `1461:/obj/machinery/networked/radio/attackby(obj/item/W, mob/user)`
-- `1471:/obj/machinery/networked/radio/Topic(href, href_list)`
-- `1499:/obj/machinery/networked/radio/power_change()`
-- `1508:/obj/machinery/networked/radio/process()`
-- `1530:/obj/machinery/networked/radio/receive_signal(datum/signal/signal, transmission_type, range, connection_id)`
-- `1727:/obj/machinery/networked/printer/New()`
-- `1747:/obj/machinery/networked/printer/disposing()`
-- `1752:/obj/machinery/networked/printer/attackby(obj/item/W, mob/user)`
-- `1807:/obj/machinery/networked/printer/onDestroy()`
-- `1813:/obj/machinery/networked/printer/attack_hand(mob/user)`
-- `1849:/obj/machinery/networked/printer/Topic(href, href_list)`
-- `1891:/obj/machinery/networked/printer/process()`
-- `1920:/obj/machinery/networked/printer/receive_signal(datum/signal/signal)`
-- `2158:/obj/machinery/networked/printer/update_icon()`
-- `2202:/obj/machinery/networked/storage/scanner/New()`
-- `2207:/obj/machinery/networked/storage/scanner/attack_hand(mob/user)`
-- `2244:/obj/machinery/networked/storage/scanner/attackby(obj/item/W, mob/user)`
-- `2262:/obj/machinery/networked/storage/scanner/MouseDrop_T(obj/item/W, mob/user)`
-- `2282:/obj/machinery/networked/storage/scanner/Topic(href, href_list)`
-- `2323:/obj/machinery/networked/storage/scanner/power_change()`
-- `2333:/obj/machinery/networked/storage/scanner/process()`
-- `2462:/obj/machinery/networked/secdetector/New()`
-- `2484:/obj/machinery/networked/secdetector/disposing()`
-- `2490:/obj/machinery/networked/secdetector/disposing()`
-- `2500:/obj/machinery/networked/secdetector/attack_hand(mob/user)`
-- `2542:/obj/machinery/networked/secdetector/Topic(href, href_list)`
-- `2569:/obj/machinery/networked/secdetector/process()`
-- `2618:/obj/machinery/networked/secdetector/receive_signal(datum/signal/signal)`
-- `2704:/obj/machinery/networked/secdetector/ex_act(severity)`
-- `2718:/obj/machinery/networked/secdetector/power_change()`
-- `2727:/obj/machinery/networked/secdetector/update_icon(var/newState = 1)`
-- `2798:/obj/beam/disposing()`
-- `2804:/obj/beam/Bumped()`
-- `2808:/obj/beam/Crossed(atom/movable/AM as mob|obj)`
-- `2853:/obj/beam/ir_beam/New(location, newLimit)`
-- `2861:/obj/beam/ir_beam/disposing()`
-- `2867:/obj/beam/ir_beam/disposing()`
-- `2874:/obj/beam/ir_beam/Crossed(atom/movable/AM as mob|obj)`
-- `2884:/obj/beam/ir_beam/hit()`
-- `2891:/obj/beam/ir_beam/generate_next()`
-- `2918:/obj/machinery/networked/h7_emitter/New()`
-- `2934:/obj/machinery/networked/h7_emitter/disposing()`
-- `2940:/obj/machinery/networked/h7_emitter/disposing()`
-- `2955:/obj/machinery/networked/h7_emitter/attackby(obj/item/W, mob/user)`
-- `2968:/obj/machinery/networked/h7_emitter/attack_hand(mob/user)`
-- `3018:/obj/machinery/networked/h7_emitter/Topic(href, href_list)`
-- `3098:/obj/machinery/networked/h7_emitter/process()`
-- `3107:/obj/machinery/networked/h7_emitter/receive_signal(datum/signal/signal)`
-- `3195:/obj/machinery/networked/h7_emitter/power_change()`
-- `3204:/obj/machinery/networked/h7_emitter/ex_act(severity)`
-- `3219:/obj/machinery/networked/h7_emitter/update_icon()`
-- `3273:/obj/machinery/networked/test_apparatus/New()`
-- `3289:/obj/machinery/networked/test_apparatus/attackby(obj/item/W, mob/user)`
-- `3303:/obj/machinery/networked/test_apparatus/attack_hand(mob/user)`
-- `3334:/obj/machinery/networked/test_apparatus/MouseDrop_T(atom/movable/O as mob|obj, mob/user as mob)`
-- `3347:/obj/machinery/networked/test_apparatus/mouse_drop(obj/over_object as obj, src_location, over_location)`
-- `3369:/obj/machinery/networked/test_apparatus/Topic(href, href_list)`
-- `3399:/obj/machinery/networked/test_apparatus/process()`
-- `3411:/obj/machinery/networked/test_apparatus/receive_signal(datum/signal/signal)`
-- `3493:/obj/machinery/networked/test_apparatus/power_change()`
-- `3502:/obj/machinery/networked/test_apparatus/ex_act(severity)`
-- `3517:/obj/machinery/networked/test_apparatus/update_icon()`
-- `3573:/obj/machinery/networked/test_apparatus/pitching_machine/return_html_interface()`
-- `3576:/obj/machinery/networked/test_apparatus/pitching_machine/message_interface(var/list/packetData)`
-- `3632:/obj/machinery/networked/test_apparatus/pitching_machine/process()`
-- `3659:/obj/machinery/networked/test_apparatus/pitching_machine/attackby(var/obj/item/I, mob/user)`
-- `3694:/obj/machinery/networked/test_apparatus/pitching_machine/MouseDrop_T(atom/movable/O as mob|obj, mob/user as mob)`
-- `3713:/obj/machinery/networked/test_apparatus/impact_pad/return_html_interface()`
-- `3716:/obj/machinery/networked/test_apparatus/impact_pad/message_interface(var/list/packetData)`
-- `3774:/obj/machinery/networked/test_apparatus/impact_pad/attackby(var/obj/item/I, mob/user)`
-- `3808:/obj/machinery/networked/test_apparatus/impact_pad/MouseDrop_T(atom/movable/O as mob|obj, mob/user as mob)`
-- `3814:/obj/machinery/networked/test_apparatus/impact_pad/hitby(atom/movable/M, datum/thrown_thing/thr)`
-- `3824:/obj/machinery/networked/test_apparatus/impact_pad/bullet_act(var/obj/projectile/P)`
-- `3890:/obj/machinery/networked/test_apparatus/electrobox/return_html_interface()`
-- `3893:/obj/machinery/networked/test_apparatus/electrobox/update_icon()`
-- `3900:/obj/machinery/networked/test_apparatus/electrobox/process()`
-- `3937:/obj/machinery/networked/test_apparatus/electrobox/attackby(var/obj/item/I, mob/user)`
-- `3965:/obj/machinery/networked/test_apparatus/electrobox/message_interface(var/list/packetData)`
-- `4100:/obj/machinery/networked/test_apparatus/xraymachine/return_html_interface()`
-- `4103:/obj/machinery/networked/test_apparatus/xraymachine/update_icon()`
-- `4110:/obj/machinery/networked/test_apparatus/xraymachine/attackby(var/obj/item/I, mob/user)`
-- `4138:/obj/machinery/networked/test_apparatus/xraymachine/message_interface(var/list/packetData)`
-- `4297:/obj/machinery/networked/test_apparatus/heater/New()`
-- `4301:/obj/machinery/networked/test_apparatus/heater/return_html_interface()`
-- `4304:/obj/machinery/networked/test_apparatus/heater/update_icon()`
-- `4323:/obj/machinery/networked/test_apparatus/heater/attackby(var/obj/item/I, mob/user)`
-- `4347:/obj/machinery/networked/test_apparatus/heater/process()`
-- `4379:/obj/machinery/networked/test_apparatus/heater/message_interface(var/list/packetData)`
-- `4502:/obj/machinery/networked/test_apparatus/laserE/return_html_interface()`
-- `4505:/obj/machinery/networked/test_apparatus/laserE/process()`
-- `4523:/obj/machinery/networked/test_apparatus/laserE/message_interface(var/list/packetData)`
-- `4611:/obj/machinery/networked/test_apparatus/gas_sensor/New()`
-- `4616:/obj/machinery/networked/test_apparatus/gas_sensor/return_html_interface()`
-- `4619:/obj/machinery/networked/test_apparatus/gas_sensor/message_interface(var/list/packetData)`
-- `4684:/obj/machinery/networked/test_apparatus/mechanics/New()`
-- `4697:/obj/machinery/networked/test_apparatus/mechanics/return_html_interface()`
-- `4707:/obj/machinery/networked/test_apparatus/mechanics/message_interface(var/list/packetData)`
-- `4792:/obj/machinery/networked/test_apparatus/mechanics/process()`
-
-### `code\modules\networks\computer3\mainframe2\os_drivers.dm`
-- `31:/datum/computer/file/mainframe_program/driver/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `37:/datum/computer/file/mainframe_program/driver/asText()`
-- `60:/datum/computer/file/mainframe_program/driver/mountable/disposing()`
-- `83:/datum/computer/file/mainframe_program/driver/mountable/disposing()`
-- `137:/datum/computer/file/mainframe_program/driver/mountable/user_terminal/initialize(var/initparams)`
-- `144:/datum/computer/file/mainframe_program/driver/mountable/user_terminal/add_file(var/datum/computer/file/a_file, var/datum/mainframe2_user_data/user)`
-- `170:/datum/computer/file/mainframe_program/driver/mountable/databank/initialize(var/initparams)`
-- `178:/datum/computer/file/mainframe_program/driver/mountable/databank/terminal_input(var/data, var/datum/computer/file/file)`
-- `304:/datum/computer/file/mainframe_program/driver/mountable/databank/remove_file(var/datum/computer/file/file)`
-- `321:/datum/computer/file/mainframe_program/driver/mountable/databank/change_metadata(var/datum/computer/file/file, var/field, var/newval)`
-- `378:/datum/computer/folder/mountpoint/New(var/datum/computer/file/mainframe_program/driver/mountable/newdriver)`
-- `389:/datum/computer/folder/mountpoint/disposing()`
-- `395:/datum/computer/folder/mountpoint/disposing()`
-- `404:/datum/computer/folder/mountpoint/add_file(datum/computer/R, misc)`
-- `411:/datum/computer/folder/mountpoint/remove_file(datum/computer/R, misc)`
-- `428:/datum/computer/file/mainframe_program/driver/mountable/printer/disposing()`
-- `434:/datum/computer/file/mainframe_program/driver/mountable/printer/initialize(var/initparams)`
-- `455:/datum/computer/file/mainframe_program/driver/mountable/printer/add_file(var/datum/computer/file/theFile)`
-- `466:/datum/computer/file/mainframe_program/driver/mountable/printer/remove_file(var/datum/computer/file/file)`
-- `477:/datum/computer/file/mainframe_program/driver/mountable/printer/change_metadata(var/datum/computer/file/file, var/field, var/newval)`
-- `480:/datum/computer/file/mainframe_program/driver/mountable/printer/process()`
-- `518:/datum/computer/file/mainframe_program/driver/mountable/printer/terminal_input(var/data, var/datum/computer/file/file)`
-- `633:/datum/computer/file/mainframe_program/driver/telepad/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `738:/datum/computer/file/mainframe_program/driver/telepad/terminal_input(var/data, var/datum/computer/file/file)`
-- `775:/datum/computer/file/mainframe_program/srv/telecontrol/initialize(var/initparams)`
-- `1035:/datum/computer/file/mainframe_program/driver/nuke/initialize(var/initparams)`
-- `1042:/datum/computer/file/mainframe_program/driver/nuke/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `1132:/datum/computer/file/mainframe_program/driver/nuke/process()`
-- `1148:/datum/computer/file/mainframe_program/driver/nuke/terminal_input(var/data, var/datum/computer/file/file)`
-- `1204:/datum/computer/file/mainframe_program/nuke_interface/initialize(var/initparams)`
-- `1328:/datum/computer/file/mainframe_program/nuke_interface/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `1391:/datum/computer/file/mainframe_program/driver/mountable/guard_dock/initialize(var/initparams)`
-- `1410:/datum/computer/file/mainframe_program/driver/mountable/guard_dock/terminal_input(var/data, var/datum/computer/file/file)`
-- `1577:/datum/computer/file/mainframe_program/driver/mountable/guard_dock/add_file(var/datum/computer/file/theFile)`
-- `1598:/datum/computer/file/mainframe_program/driver/mountable/guard_dock/remove_file(var/datum/computer/file/theFile)`
-- `1609:/datum/computer/file/mainframe_program/driver/mountable/guard_dock/change_metadata(var/datum/computer/file/file, var/field, var/newval)`
-- `1619:/datum/computer/file/mainframe_program/guardbot_interface/initialize(var/initparams)`
-- `1836:/datum/computer/file/mainframe_program/driver/mountable/radio/initialize(var/initparams)`
-- `1843:/datum/computer/file/mainframe_program/driver/mountable/radio/process()`
-- `1846:/datum/computer/file/mainframe_program/driver/mountable/radio/disposing()`
-- `1858:/datum/computer/file/mainframe_program/driver/mountable/radio/terminal_input(var/data, var/datum/computer/file/theFile)`
-- `1945:/datum/computer/file/mainframe_program/driver/mountable/radio/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `1973:/datum/computer/file/mainframe_program/driver/mountable/radio/add_file(var/datum/computer/file/theFile, var/freq)`
-- `2011:/datum/computer/file/mainframe_program/driver/mountable/radio/remove_file(var/datum/computer/file/file)`
-- `2024:/datum/computer/file/mainframe_program/driver/mountable/radio/change_metadata(var/datum/computer/file/file, var/field, var/newval)`
-- `2030:/datum/computer/folder/radio_channel/New(var/datum/computer/file/mainframe_program/driver/mountable/radio/newDriver)`
-- `2036:/datum/computer/folder/radio_channel/can_add_file(datum/computer/file/R)`
-- `2039:/datum/computer/folder/radio_channel/add_file(var/datum/computer/file/theFile)`
-- `2045:/datum/computer/folder/radio_channel/remove_file(var/datum/computer/file/theFile)`
-- `2067:/datum/computer/file/mainframe_program/driver/secdetector/process()`
-- `2070:/datum/computer/file/mainframe_program/driver/secdetector/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `2101:/datum/computer/file/mainframe_program/driver/secdetector/terminal_input(var/data, var/datum/computer/file/file)`
-- `2150:/datum/computer/file/mainframe_program/driver/apc/process()`
-- `2153:/datum/computer/file/mainframe_program/driver/apc/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `2186:/datum/computer/file/mainframe_program/driver/apc/terminal_input(var/data, var/datum/computer/file/file)`
-- `2230:/datum/computer/file/mainframe_program/driver/hept_emitter/process()`
-- `2233:/datum/computer/file/mainframe_program/driver/hept_emitter/terminal_input(var/data, var/datum/computer/file/file)`
-- `2247:/datum/computer/file/mainframe_program/driver/hept_emitter/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `2279:/datum/computer/file/mainframe_program/hept_interface/initialize(var/initparams)`
-- `2342:/datum/computer/file/mainframe_program/h7init/initialize()`
-- `2350:/datum/computer/file/mainframe_program/h7init/process()`
-- `2431:/datum/computer/file/mainframe_program/driver/test_apparatus/process()`
-- `2434:/datum/computer/file/mainframe_program/driver/test_apparatus/receive_progsignal(var/sendid, var/list/data, var/datum/computer/file/file)`
-- `2525:/datum/computer/file/mainframe_program/driver/test_apparatus/terminal_input(var/data, var/datum/computer/file/file)`
-- `2738:/datum/computer/file/mainframe_program/driver/mountable/service_terminal/process()`
-- `2742:/datum/computer/file/mainframe_program/driver/mountable/service_terminal/disposing()`
-- `2748:/datum/computer/file/mainframe_program/driver/mountable/service_terminal/disposing()`
-- `2755:/datum/computer/file/mainframe_program/driver/mountable/service_terminal/initialize(initparams)`
-- `2794:/datum/computer/file/mainframe_program/driver/mountable/service_terminal/terminal_input(var/data, var/datum/computer/file/theFile)`
-- `2833:/datum/computer/file/mainframe_program/driver/mountable/service_terminal/receive_progsignal(var/sendid, var/list/data = null, var/datum/computer/file/file)`
-- `2867:/datum/computer/file/mainframe_program/srv/print/initialize(var/initparams)`
-- `2957:/datum/computer/file/mainframe_program/driver/mountable/comm_dish/disposing()`
-- `2962:/datum/computer/file/mainframe_program/driver/mountable/comm_dish/initialize(var/initparams)`
-- `2982:/datum/computer/file/mainframe_program/driver/mountable/comm_dish/add_file(var/datum/computer/file/theFile)`
-- `2992:/datum/computer/file/mainframe_program/driver/mountable/comm_dish/remove_file(var/datum/computer/file/file)`
-- `3002:/datum/computer/file/mainframe_program/driver/mountable/comm_dish/change_metadata(var/datum/computer/file/file, var/field, var/newval)`
-- `3005:/datum/computer/file/mainframe_program/driver/mountable/comm_dish/terminal_input(var/data, var/datum/computer/file/record/recfile)`
-
-### `code\modules\networks\computer3\mainframe2\programs\_program_parent.dm`
-- `29:/datum/computer/file/mainframe_program/New(obj/holding)`
-- `38:/datum/computer/file/mainframe_program/disposing()`
-- `45:/datum/computer/file/mainframe_program/asText()`
-- `52:/datum/computer/file/mainframe_program/proc/ensure_program()`
-- `71:/datum/computer/file/mainframe_program/proc/input_text(text)`
-- `78:/datum/computer/file/mainframe_program/proc/initialize(initparams)`
-- `86:/datum/computer/file/mainframe_program/proc/handle_quit()`
-- `90:/datum/computer/file/mainframe_program/proc/process()`
-- `97:/datum/computer/file/mainframe_program/proc/parse_string(string, list/replace_list)`
-- `104:/datum/computer/file/mainframe_program/proc/get_folder_name(string, datum/computer/folder/check_folder, datum/mainframe2_user_data/user)`
-- `119:/datum/computer/file/mainframe_program/proc/get_file_name(string, datum/computer/folder/check_folder, datum/mainframe2_user_data/user)`
-- `134:/datum/computer/file/mainframe_program/proc/get_computer_datum(string, datum/computer/folder/check_folder, datum/mainframe2_user_data/user)`
-- `149:/datum/computer/file/mainframe_program/proc/is_name_invalid(string)`
-- `163:/datum/computer/file/mainframe_program/proc/message_user(msg, render, file)`
-- `176:/datum/computer/file/mainframe_program/proc/read_user_field(field)`
-- `186:/datum/computer/file/mainframe_program/proc/write_user_field(field, data)`
-- `202:/datum/computer/file/mainframe_program/proc/signal_program(progid, list/data, datum/computer/file/file)`
-- `212:/datum/computer/file/mainframe_program/proc/receive_progsignal(sendid, list/data, datum/computer/file/file)`
-- `216:/datum/computer/file/mainframe_program/proc/unloaded()`
-- `220:/datum/computer/file/mainframe_program/proc/check_read_permission(datum/computer/target, datum/mainframe2_user_data/user)`
-- `251:/datum/computer/file/mainframe_program/proc/check_write_permission(datum/computer/target, datum/mainframe2_user_data/user)`
-- `284:/datum/computer/file/mainframe_program/proc/check_mode_permission(datum/computer/target, datum/mainframe2_user_data/user)`
-- `324:/proc/command2list(text, separator, list/replaceList, list/substitution_feedback_thing)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\_os_parent.dm`
-- `14:/datum/computer/file/mainframe_program/os/proc/new_connection(datum/terminal_connection/conn)`
-- `18:/datum/computer/file/mainframe_program/os/proc/closed_connection(datum/terminal_connection/conn)`
-- `22:/datum/computer/file/mainframe_program/os/proc/term_input(data, termid, datum/computer/file/file)`
-- `29:/datum/computer/file/mainframe_program/os/proc/ping_reply(senderid, sendertype)`
-- `33:/datum/computer/file/mainframe_program/os/proc/message_term(message, termid, render)`
-- `43:/datum/computer/file/mainframe_program/os/proc/file_term(datum/computer/file/file, termid, exdata)`
-- `63:/datum/computer/file/mainframe_program/os/proc/parse_directory(string, datum/computer/folder/origin, create_if_missing, datum/mainframe2_user_data/user)`
-- `155:/datum/computer/file/mainframe_program/os/proc/parse_file_directory(string, datum/computer/folder/origin, create_if_missing, datum/mainframe2_user_data/user)`
-- `236:/datum/computer/file/mainframe_program/os/proc/parse_datum_directory(string, datum/computer/folder/origin, create_if_missing, datum/mainframe2_user_data/user)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\bootloader.dm`
-- `36:/datum/computer/file/mainframe_program/os/bootloader/New()`
-- `40:/datum/computer/file/mainframe_program/os/bootloader/disposing()`
-- `44:/datum/computer/file/mainframe_program/os/bootloader/initialize()`
-- `60:/datum/computer/file/mainframe_program/os/bootloader/process()`
-- `91:/datum/computer/file/mainframe_program/os/bootloader/new_connection(datum/terminal_connection/conn)`
-- `97:/datum/computer/file/mainframe_program/os/bootloader/closed_connection(datum/terminal_connection/conn)`
-- `103:/datum/computer/file/mainframe_program/os/bootloader/ping_reply(senderid, sendertype)`
-- `116:/datum/computer/file/mainframe_program/os/bootloader/term_input(data, termid, datum/computer/file/file)`
-- `219:/datum/computer/file/mainframe_program/os/bootloader/proc/new_current()`
-- `233:/datum/computer/file/mainframe_program/os/bootloader/proc/clear_core()`
-- `246:/datum/computer/file/mainframe_program/os/bootloader/proc/disconnect_devices()`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\kernel.dm`
-- `36:/datum/computer/file/mainframe_program/os/kernel/New()`
-- `42:/datum/computer/file/mainframe_program/os/kernel/disposing()`
-- `57:/datum/computer/file/mainframe_program/os/kernel/initialize()`
-- `95:/datum/computer/file/mainframe_program/os/kernel/term_input(data, termid, datum/computer/file/file, is_break = FALSE)`
-- `127:/datum/computer/file/mainframe_program/os/kernel/new_connection(datum/terminal_connection/conn, datum/computer/file/connect_file)`
-- `180:/datum/computer/file/mainframe_program/os/kernel/closed_connection(datum/terminal_connection/conn)`
-- `192:/datum/computer/file/mainframe_program/os/kernel/ping_reply(senderid, sendertype)`
-- `215:/datum/computer/file/mainframe_program/os/kernel/receive_progsignal(sendid, list/data, datum/computer/file/file)`
-- `231:/datum/computer/file/mainframe_program/os/kernel/process()`
-- `246:/datum/computer/file/mainframe_program/os/kernel/proc/initialize_users()`
-- `301:/datum/computer/file/mainframe_program/os/kernel/proc/login_temp_user(user_netid, datum/computer/file/record/login_record, datum/computer/file/mainframe_program/caller_prog_override)`
-- `330:/datum/computer/file/mainframe_program/os/kernel/proc/login_user(datum/mainframe2_user_data/account, user_name, sysop = FALSE, interactive = TRUE)`
-- `407:/datum/computer/file/mainframe_program/os/kernel/proc/logout_user(datum/mainframe2_user_data/user, disconnect = FALSE)`
-- `421:/datum/computer/file/mainframe_program/os/kernel/proc/logout_all_users(disconnect = FALSE)`
-- `430:/datum/computer/file/mainframe_program/os/kernel/proc/initialize_drivers()`
-- `489:/datum/computer/file/mainframe_program/os/kernel/proc/initialize_driver(datum/computer/file/mainframe_program/driver/driver, datum/computer/file/connect_file)`
-- `511:/datum/computer/file/mainframe_program/os/kernel/proc/is_sysop(datum/mainframe2_user_data/udat)`
-- `521:/datum/computer/file/mainframe_program/os/kernel/proc/change_metadata(datum/computer/file/file, field, newval)`
-- `533:/datum/computer/file/mainframe_program/os/kernel/proc/message_all_users(message, sender_name, ignore_user_file_setting)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\_syscall.dm`
-- `12:/datum/dwaine_syscall/New(datum/computer/file/mainframe_program/os/kernel/kernel)`
-- `16:/datum/dwaine_syscall/disposing()`
-- `21:/datum/dwaine_syscall/proc/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\confget.dm`
-- `4:/datum/dwaine_syscall/confget/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\dget.dm`
-- `4:/datum/dwaine_syscall/dget/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\dlist.dm`
-- `4:/datum/dwaine_syscall/dlist/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\dmsg.dm`
-- `4:/datum/dwaine_syscall/dmsg/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\dscan.dm`
-- `4:/datum/dwaine_syscall/dscan/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\exit.dm`
-- `4:/datum/dwaine_syscall/exit/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\fget.dm`
-- `4:/datum/dwaine_syscall/fget/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\fkill.dm`
-- `4:/datum/dwaine_syscall/fkill/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\fmode.dm`
-- `4:/datum/dwaine_syscall/fmode/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\fowner.dm`
-- `4:/datum/dwaine_syscall/fowner/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\fwrite.dm`
-- `4:/datum/dwaine_syscall/fwrite/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\mount.dm`
-- `4:/datum/dwaine_syscall/mount/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\msg_term.dm`
-- `4:/datum/dwaine_syscall/msg_term/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\tfork.dm`
-- `4:/datum/dwaine_syscall/tfork/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\tkill.dm`
-- `4:/datum/dwaine_syscall/tkill/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\tlist.dm`
-- `4:/datum/dwaine_syscall/tlist/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\tspawn.dm`
-- `4:/datum/dwaine_syscall/tspawn/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\ugroup.dm`
-- `4:/datum/dwaine_syscall/ugroup/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\uinput.dm`
-- `4:/datum/dwaine_syscall/uinput/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\ulist.dm`
-- `4:/datum/dwaine_syscall/ulist/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\ulogin.dm`
-- `4:/datum/dwaine_syscall/ulogin/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\kernel\syscalls\umsg.dm`
-- `4:/datum/dwaine_syscall/umsg/execute(sendid, list/data, datum/computer/file/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\login.dm`
-- `13:/datum/computer/file/mainframe_program/login/initialize()`
-- `26:/datum/computer/file/mainframe_program/login/receive_progsignal(sendid, list/data, datum/computer/file/record/file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\_shell_builtin.dm`
-- `12:/datum/dwaine_shell_builtin/New(datum/computer/file/mainframe_program/shell/shell)`
-- `16:/datum/dwaine_shell_builtin/disposing()`
-- `21:/datum/dwaine_shell_builtin/proc/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\break.dm`
-- `4:/datum/dwaine_shell_builtin/_break/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\cls.dm`
-- `4:/datum/dwaine_shell_builtin/cls/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\echo.dm`
-- `4:/datum/dwaine_shell_builtin/echo/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\else.dm`
-- `4:/datum/dwaine_shell_builtin/_else/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\eval.dm`
-- `4:/datum/dwaine_shell_builtin/eval/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\goonsay.dm`
-- `4:/datum/dwaine_shell_builtin/goonsay/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\if.dm`
-- `4:/datum/dwaine_shell_builtin/_if/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\logout.dm`
-- `4:/datum/dwaine_shell_builtin/logout/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\man.dm`
-- `4:/datum/dwaine_shell_builtin/man/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\mesg.dm`
-- `4:/datum/dwaine_shell_builtin/mesg/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\sleep.dm`
-- `4:/datum/dwaine_shell_builtin/_sleep/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\talk.dm`
-- `4:/datum/dwaine_shell_builtin/talk/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\unset.dm`
-- `4:/datum/dwaine_shell_builtin/unset/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\while.dm`
-- `4:/datum/dwaine_shell_builtin/_while/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_builtins\who.dm`
-- `4:/datum/dwaine_shell_builtin/who/execute(list/command_list, list/piped_list)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\_shell_script_operator.dm`
-- `13:/datum/dwaine_shell_script_operator/New(datum/computer/file/mainframe_program/shell/shell)`
-- `17:/datum/dwaine_shell_script_operator/disposing()`
-- `22:/datum/dwaine_shell_script_operator/proc/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\arithmetic\add.dm`
-- `10:/datum/dwaine_shell_script_operator/add/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\arithmetic\divide.dm`
-- `10:/datum/dwaine_shell_script_operator/divide/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\arithmetic\modulo.dm`
-- `9:/datum/dwaine_shell_script_operator/modulo/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\arithmetic\multiply.dm`
-- `10:/datum/dwaine_shell_script_operator/multiply/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\arithmetic\rand.dm`
-- `10:/datum/dwaine_shell_script_operator/rand/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\arithmetic\subtract.dm`
-- `10:/datum/dwaine_shell_script_operator/subtract/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\file\exists.dm`
-- `11:/datum/dwaine_shell_script_operator/exists/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\file\is_directory.dm`
-- `11:/datum/dwaine_shell_script_operator/is_directory/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\file\is_executable.dm`
-- `11:/datum/dwaine_shell_script_operator/is_executable/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\file\is_file.dm`
-- `11:/datum/dwaine_shell_script_operator/is_file/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\logic\and.dm`
-- `11:/datum/dwaine_shell_script_operator/and/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\logic\not.dm`
-- `10:/datum/dwaine_shell_script_operator/not/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\logic\or.dm`
-- `11:/datum/dwaine_shell_script_operator/or/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\logic\xor.dm`
-- `11:/datum/dwaine_shell_script_operator/xor/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\misc\assignment.dm`
-- `8:/datum/dwaine_shell_script_operator/assignment/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\misc\escape_string.dm`
-- `12:/datum/dwaine_shell_script_operator/escape_string/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\misc\stack_del_topmost.dm`
-- `11:/datum/dwaine_shell_script_operator/stack_del_topmost/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\misc\stack_depth.dm`
-- `11:/datum/dwaine_shell_script_operator/stack_depth/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\misc\stack_dup_topmost.dm`
-- `13:/datum/dwaine_shell_script_operator/stack_dup_topmost/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\misc\stack_pop.dm`
-- `11:/datum/dwaine_shell_script_operator/stack_pop/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\misc\stack_print.dm`
-- `11:/datum/dwaine_shell_script_operator/stack_print/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\relational\eq.dm`
-- `10:/datum/dwaine_shell_script_operator/eq/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\relational\ge.dm`
-- `12:/datum/dwaine_shell_script_operator/ge/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\relational\gt.dm`
-- `12:/datum/dwaine_shell_script_operator/gt/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\relational\le.dm`
-- `12:/datum/dwaine_shell_script_operator/le/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\relational\lt.dm`
-- `12:/datum/dwaine_shell_script_operator/lt/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell_script_operators\relational\ne.dm`
-- `10:/datum/dwaine_shell_script_operator/ne/execute(list/token_stream)`
-
-### `code\modules\networks\computer3\mainframe2\programs\os\shell\shell.dm`
-- `39:/datum/computer/file/mainframe_program/shell/disposing()`
-- `60:/datum/computer/file/mainframe_program/shell/initialize(list/supplied_config)`
-- `114:/datum/computer/file/mainframe_program/shell/process()`
-- `121:/datum/computer/file/mainframe_program/shell/input_text(text)`
-- `243:/datum/computer/file/mainframe_program/shell/receive_progsignal(sendid, list/data, datum/computer/file/file)`
-- `275:/datum/computer/file/mainframe_program/shell/message_user(msg, render, file)`
-- `293:/datum/computer/file/mainframe_program/shell/proc/execpath(file_path, list/command_list, scripting = 0)`
-- `342:/datum/computer/file/mainframe_program/shell/proc/script_process()`
-- `380:/datum/computer/file/mainframe_program/shell/proc/script_format(list/script_list)`
-- `381:/datum/computer/file/mainframe_program/shell/RETURN_TYPE(/list)`
-- `398:/datum/computer/file/mainframe_program/shell/proc/script_evaluate(list/token_stream, return_bool = FALSE)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\_utility.dm`
-- `38:/proc/optparse(data)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\cat.dm`
-- `4:/datum/computer/file/mainframe_program/utility/cat/initialize(initparams)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\cd.dm`
-- `4:/datum/computer/file/mainframe_program/utility/cd/initialize(initparams)`
-- `24:/datum/computer/file/mainframe_program/utility/cd/proc/trim_path(filepath)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\chmod.dm`
-- `4:/datum/computer/file/mainframe_program/utility/chmod/initialize(initparams)`
-- `37:/datum/computer/file/mainframe_program/utility/chmod/proc/process_permissions(permissions)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\chown.dm`
-- `4:/datum/computer/file/mainframe_program/utility/chown/initialize(initparams)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\cp.dm`
-- `4:/datum/computer/file/mainframe_program/utility/cp/initialize(initparams)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\date.dm`
-- `5:/datum/computer/file/mainframe_program/utility/date/initialize(initparams)`
-- `56:/datum/computer/file/mainframe_program/utility/date/receive_progsignal(sendid, list/data, datum/computer/file/file)`
-- `76:/datum/computer/file/mainframe_program/utility/date/proc/usage()`
-- `82:/datum/computer/file/mainframe_program/utility/date/proc/message_reply_and_user(message)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\getopt.dm`
-- `5:/datum/computer/file/mainframe_program/utility/getopt/initialize(initparams)`
-- `44:/datum/computer/file/mainframe_program/utility/getopt/proc/invoke(list/string_list)`
-- `137:/datum/computer/file/mainframe_program/utility/getopt/proc/message_reply_and_user(message)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\grep.dm`
-- `5:/datum/computer/file/mainframe_program/utility/grep/initialize(initparams)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\ln.dm`
-- `4:/datum/computer/file/mainframe_program/utility/ln/initialize(initparams)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\ls.dm`
-- `4:/datum/computer/file/mainframe_program/utility/ls/initialize(initparams)`
-- `48:/datum/computer/file/mainframe_program/utility/ls/proc/print_file_description(datum/computer/C)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\mkdir.dm`
-- `4:/datum/computer/file/mainframe_program/utility/mkdir/initialize(initparams)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\mount.dm`
-- `4:/datum/computer/file/mainframe_program/utility/mount/initialize(initparams)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\mv.dm`
-- `4:/datum/computer/file/mainframe_program/utility/mv/initialize(initparams)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\pwd.dm`
-- `4:/datum/computer/file/mainframe_program/utility/pwd/initialize(initparams)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\rm.dm`
-- `12:/datum/computer/file/mainframe_program/utility/rm/initialize(initparams)`
-- `61:/datum/computer/file/mainframe_program/utility/rm/input_text(text)`
-- `82:/datum/computer/file/mainframe_program/utility/rm/message_user(msg, render, file)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\scnt.dm`
-- `4:/datum/computer/file/mainframe_program/utility/scnt/initialize(initparams)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\su.dm`
-- `4:/datum/computer/file/mainframe_program/utility/su/initialize(initparams)`
-- `11:/datum/computer/file/mainframe_program/utility/su/receive_progsignal(sendid, list/data, datum/computer/file/file)`
-- `33:/datum/computer/file/mainframe_program/utility/su/input_text(text)`
-
-### `code\modules\networks\computer3\mainframe2\programs\utilities\tar.dm`
-- `23:/datum/computer/file/mainframe_program/utility/tar/initialize(initparams)`
-- `173:/datum/computer/file/mainframe_program/utility/tar/receive_progsignal(sendid, list/data, datum/computer/file/file)`
-- `193:/datum/computer/file/mainframe_program/utility/tar/message_user(msg, render, file)`
-- `199:/datum/computer/file/mainframe_program/utility/tar/proc/usage()`
-- `205:/datum/computer/file/mainframe_program/utility/tar/proc/message_reply_and_user(message)`
-- `213:/datum/computer/file/mainframe_program/utility/tar/proc/temp_file_name()`
-- `218:/datum/computer/file/mainframe_program/utility/tar/proc/recursive_list(datum/computer/target, current_path = "", depth = 0)`
-- `233:/datum/computer/file/mainframe_program/utility/tar/proc/recursive_extract(datum/computer/to_extract, target_path, current_path = "", depth = 0)`
-- `276:/datum/computer/file/mainframe_program/utility/tar/proc/deep_copy(datum/computer/to_copy, current_path = "", depth = 0)`
-
-### `code\modules\networks\computer3\mainframe2\tapes.dm`
-- `16:/obj/item/disk/data/memcard/main2/New()`
-- `143:/obj/item/disk/data/tape/master/New()`
-- `179:/obj/item/disk/data/tape/boot2/New()`
-- `224:/obj/item/disk/data/tape/test/New()`
-- `236:/obj/item/disk/data/tape/guardbot_tools/New()`
-- `255:/obj/item/disk/data/tape/artifact_research/New()`
-
-### `code\modules\networks\computer3\mainframe2\telesci.dm`
-- `62:/obj/machinery/networked/telepad/New()`
-- `84:/obj/machinery/networked/telepad/ex_act()`
-- `87:/obj/machinery/networked/telepad/examine()`
-- `92:/obj/machinery/networked/telepad/ui_interact(mob/user, datum/tgui/ui)`
-- `98:/obj/machinery/networked/telepad/ui_data(mob/user)`
-- `103:/obj/machinery/networked/telepad/ui_act(action, params)`
-- `126:/obj/machinery/networked/telepad/attack_hand(mob/user)`
-- `131:/obj/machinery/networked/telepad/updateUsrDialog()`
-- `138:/obj/machinery/networked/telepad/receive_signal(datum/signal/signal)`
-- `432:/obj/machinery/networked/telepad/process()`
-- `963:/obj/machinery/networked/teleconsole/New()`
-- `976:/obj/machinery/networked/teleconsole/disposing()`
-- `980:/obj/machinery/networked/teleconsole/receive_signal(datum/signal/signal)`
-- `1072:/obj/machinery/networked/teleconsole/attackby(obj/item/W, mob/user)`
-- `1089:/obj/machinery/networked/teleconsole/process()`
-- `1110:/obj/machinery/networked/teleconsole/ui_interact(mob/user, datum/tgui/ui)`
-- `1116:/obj/machinery/networked/teleconsole/ui_data(mob/user)`
-- `1150:/obj/machinery/networked/teleconsole/ui_act(action, params)`
-
-### `code\modules\networks\computer3\terminal.dm`
-- `19:/datum/computer/file/terminal_program/os/terminal_os/input_text(text)`
-- `360:/datum/computer/file/terminal_program/os/terminal_os/initialize()`
-- `409:/datum/computer/file/terminal_program/os/terminal_os/disk_ejected(var/obj/item/disk/data/thedisk)`
-- `444:/datum/computer/file/terminal_program/os/terminal_os/restart()`
-- `455:/datum/computer/file/terminal_program/os/terminal_os/process()`
-- `469:/datum/computer/file/terminal_program/os/terminal_os/receive_command(obj/source, command, datum/signal/signal)`
+
+### `_syscalls.dm` (command IDs and packet contract keys)
+- `DWAINE_COMMAND_MSG_TERM` (`1`): send text or file to terminal endpoint; uses keys like `term`, `data`, `render`.
+- `DWAINE_COMMAND_ULOGIN` (`2`): request user login flow; supports TEMP/full/service/sysop fields (`name`, `sysop`, `service`, `data`).
+- `DWAINE_COMMAND_UGROUP` (`3`): request update of active user group metadata.
+- `DWAINE_COMMAND_ULIST` (`4`): request active user list.
+- `DWAINE_COMMAND_UMSG` (`5`): direct user-to-user message dispatch.
+- `DWAINE_COMMAND_UINPUT` (`6`): alternate terminal input injection path.
+- `DWAINE_COMMAND_DMSG` (`7`): relay command payload to driver.
+- `DWAINE_COMMAND_DLIST` (`8`): list drivers by type/tag.
+- `DWAINE_COMMAND_DGET` (`9`): resolve driver index by tag or net-id-derived name.
+- `DWAINE_COMMAND_DSCAN` (`10`): force immediate device scan window.
+- `DWAINE_COMMAND_EXIT` (`11`): instruct caller task to exit.
+- `DWAINE_COMMAND_TSPAWN` (`12`): spawn program task by filesystem path.
+- `DWAINE_COMMAND_TFORK` (`13`): fork a task of current program type.
+- `DWAINE_COMMAND_TKILL` (`14`): terminate a caller-owned child task.
+- `DWAINE_COMMAND_TLIST` (`15`): list caller-owned child tasks.
+- `DWAINE_COMMAND_TEXIT` (`16`): parent notification that child task exited.
+- `DWAINE_COMMAND_FGET` (`17`): resolve file/folder by path.
+- `DWAINE_COMMAND_FKILL` (`18`): delete file/folder by path.
+- `DWAINE_COMMAND_FMODE` (`19`): set metadata permission bits.
+- `DWAINE_COMMAND_FOWNER` (`20`): set metadata owner/group.
+- `DWAINE_COMMAND_FWRITE` (`21`): write file datum to path with optional mkdir/replace/append semantics.
+- `DWAINE_COMMAND_CONFGET` (`22`): fetch named config file from `/conf`.
+- `DWAINE_COMMAND_MOUNT` (`23`): create mountpoint for mountable device driver.
+- `DWAINE_COMMAND_RECVFILE` (`24`): signal that a file payload has been delivered.
+- `DWAINE_COMMAND_BREAK` (`25`): signal that script processing should break.
+- `DWAINE_COMMAND_REPLY` (`30`): generic reply packet used by utility subprocess workflows.
+
+### `_errors.dm` (status and error bitfields/codes)
+- `ESIG_SUCCESS` (`0`): syscall completed successfully.
+- `ESIG_GENERIC` (`1 << 0`): generic failure.
+- `ESIG_NOTARGET` (`1 << 1`): required target missing/invalid.
+- `ESIG_BADCOMMAND` (`1 << 2`): command ID invalid/unhandled.
+- `ESIG_NOUSR` (`1 << 3`): required user context missing.
+- `ESIG_IOERR` (`1 << 4`): I/O failure or endpoint refused operation.
+- `ESIG_NOFILE` (`1 << 5`): required file/path missing.
+- `ESIG_NOWRITE` (`1 << 6`): write permission denied.
+- `ESIG_USR1` (`1 << 7`): user-defined application-specific status/error slot 1.
+- `ESIG_USR2` (`1 << 8`): user-defined application-specific status/error slot 2.
+- `ESIG_USR3` (`1 << 9`): user-defined application-specific status/error slot 3.
+- `ESIG_USR4` (`1 << 10`): user-defined application-specific status/error slot 4.
+- `ESIG_DATABIT` (`1 << 15`): marker bit indicating a numeric return includes payload data rather than error-only state.
+- `BUILTIN_SUCCESS` (`0`): shell builtin completed normally.
+- `BUILTIN_BREAK` (`1`): builtin requests shell/script break.
+- `BUILTIN_CONTINUE` (`2`): builtin requests script continue behavior.
+- `EXEC_FAILURE` (`0`): executable launch failed.
+- `EXEC_SUCCESS` (`1`): executable launch succeeded.
+- `EXEC_SCRIPT_ERROR` (`2`): shell script launch/evaluation failed.
+- `EXEC_STACK_OVERFLOW` (`3`): script execution hit iteration/fork limit.
+- `SCRIPT_SUCCESS` (`0`): script operator evaluation succeeded.
+- `SCRIPT_STACK_OVERFLOW` (`-1`): stack exceeded configured depth/limits.
+- `SCRIPT_STACK_UNDERFLOW` (`-2`): operator required more operands than available.
+- `SCRIPT_UNDEFINED` (`-3`): undefined result (invalid type combo or undefined operation).
+
+### `_permissions.dm` (filesystem ACL bitflags)
+- `COMP_HIDDEN` (`0`): hidden/special value used by protected system folders.
+- `COMP_ROWNER` (`1 << 0`): owner read permission.
+- `COMP_WOWNER` (`1 << 1`): owner write permission.
+- `COMP_DOWNER` (`1 << 2`): owner delete/mode-change permission.
+- `COMP_RGROUP` (`1 << 3`): group read permission.
+- `COMP_WGROUP` (`1 << 4`): group write permission.
+- `COMP_DGROUP` (`1 << 5`): group delete/mode-change permission.
+- `COMP_ROTHER` (`1 << 6`): other read permission.
+- `COMP_WOTHER` (`1 << 7`): other write permission.
+- `COMP_DOTHER` (`1 << 8`): other delete/mode-change permission.
+- `COMP_ALLACC` (`~0`): full-access bitmask.
+
+### `_shell.dm` (script state flags and interpreter limits)
+- `SCRIPT_IF_TRUE` (`1 << 0`): shell script state bit indicating active `if` branch success.
+- `SCRIPT_IN_LOOP` (`1 << 1`): shell script state bit indicating while-loop context.
+- `MAX_PIPED_COMMANDS` (`16`): maximum number of pipeline segments parsed from one command line.
+- `MAX_SCRIPT_COMPLEXITY` (`2048`): maximum per-run script command iterations before aborting.
+- `MAX_SCRIPT_ITERATIONS` (`128`): maximum script fork depth/iteration chain.
+- `MAX_STACK_DEPTH` (`128`): maximum RPN stack item count.
+- `INT_MAX` (`2147483647`): script numeric upper bound.
+- `INT_MIN` (`-2147483647`): script numeric lower bound.
+- `SCRIPT_CLAMPVALUE(VALUE)`: macro that clamps and rounds script numeric values into safe internal range.
+
+### `_filepaths.dm` (canonical directory macros)
+- `setup_filepath_users` (`"/usr"`): user record directory.
+- `setup_filepath_users_home` (`"/home"`): per-user home directory root.
+- `setup_filepath_drivers` (`"/dev"`): active driver instance directory.
+- `setup_filepath_drivers_proto` (`"/sys/drvr"`): driver prototype directory.
+- `setup_filepath_volumes` (`"/mnt"`): mounted filesystem/mountpoint directory.
+- `setup_filepath_system` (`"/sys"`): system program directory (kernel/shell/login/etc.).
+- `setup_filepath_config` (`"/conf"`): config record directory.
+- `setup_filepath_commands` (`"/bin"`): command utility directory.
+- `setup_filepath_process` (`"/proc"`): runtime process copy directory.
+
+### `mainframe.dm` (shared macros and global helpers)
+- `ABSOLUTE_PATH(PATH, CURRENT_PATH)`: macro producing root-absolute path from absolute or current-directory-relative input.
+- `generic_exit_list`: global packet list for standard program exit (`"command" = DWAINE_COMMAND_EXIT`).
+- `mainframe_prog_exit`: macro shorthand to signal current program exit via parent/kernel path.
+- `MIN_NUKE_TIME` (`120`): lower bound for networked nuke timer setting.
+- `MAX_NUKE_TIME` (`600`): upper bound for networked nuke timer setting.
+
+## 16) Critical Flows
+
+### Boot -> Kernel -> Shell
+1. `mainframe/post_system()` posts the machine and loads boot/runtime OS program state.
+2. Bootloader (`initialize`/`process`) selects a valid core and hands control to kernel startup.
+3. Kernel `initialize()` wires syscalls, users, and drivers; then terminals get sessions via `new_connection()` and `login_user()`.
+4. Shell `initialize()` registers builtins/operators so user input can execute utilities and scripts.
+
+### Command Execution Path
+1. Terminal text enters kernel `term_input()` and is routed to the active program (usually shell).
+2. Shell `input_text()` parses pipelines/tokens and dispatches commands through `execpath()` or builtin `execute()`.
+3. Utilities and builtins issue syscall packets via `signal_program()`; kernel `receive_progsignal()` dispatches to syscall `execute()`.
+4. Replies/files flow back via `receive_progsignal()` and are rendered with `message_user()` to terminal.
+
+### Filesystem and Permission Path
+1. OS parse helpers (`parse_directory`/`parse_file_directory`/`parse_datum_directory`) normalize and resolve target paths.
+2. Program ACL helpers (`check_read_permission`/`check_write_permission`/`check_mode_permission`) gate access.
+3. Syscalls (`fget`/`fwrite`/`fkill`/`fmode`/`fowner`) perform kernel-authoritative file operations.
+
+### Script Evaluation Path
+1. Shell `script_format()` tokenizes script lines and `script_process()` advances control flow.
+2. `script_evaluate()` runs stack operators (arithmetic/logical/relational/file checks).
+3. Builtins like `_if`, `_else`, `_while`, and `_break` mutate script state flags to control execution.
+
+## 17) Testing Priorities
+
+1. Boot resilience: power cycle and reboot (`power_change`, `reboot_mainframe`, bootloader stages) should never leave orphan tasks.
+2. Session lifecycle: connect/disconnect, temp login, full login, and logout-all should maintain consistent user/task state.
+3. Syscall contract correctness: each `DWAINE_COMMAND_*` path should return expected `ESIG_*` on success/failure edges.
+4. Permission enforcement: verify read/write/mode checks across owner/group/other combinations and hidden files.
+5. Shell safety limits: pipeline and script complexity limits must reject pathological input without hanging runtime.
+6. Script semantics: operator stack underflow/undefined conditions should fail predictably with correct error codes.
+7. Utility integration: `cd/chmod/ls/rm/su/tar/mount` should exercise syscall layer end-to-end with realistic paths.
+
+## Appendix A: Core Proc Inventory
+Filtered to runtime-critical paths only. The exhaustive machine-generated list is in `dwaine_proc_index_full.md`.
+
+- Entries retained: 130
+- Files retained: 61
+
+### `code/modules/networks/computer3/mainframe2/mainframe2.dm`
+- `244:/obj/machinery/networked/mainframe/process()`: Main machine tick: advances loaded programs, monitors timeout state, and forces safe shutdown/reboot paths when runtime health degrades.
+- `302:/obj/machinery/networked/mainframe/receive_signal(datum/signal/signal)`: Wire packet ingress for the physical mainframe; routes terminal/device traffic into the active OS path and posts structured responses.
+- `401:/obj/machinery/networked/mainframe/power_change()`: Synchronizes software state with power state transitions, including startup posting on restore and teardown on power loss.
+- `456:/obj/machinery/networked/mainframe/proc/run_program(datum/computer/file/mainframe_program/program, datum/mainframe2_user_data/user, datum/computer/file/mainframe_program/caller_prog, runparams, allow_fork = FALSE)`: Primary task loader used by kernel/syscalls: validates executable files, creates runnable copies in process space, and wires parent-child ownership.
+- `532:/obj/machinery/networked/mainframe/proc/unload_all()`: System-wide drain path that logs out sessions and unloads every active program before reboot/destruction.
+- `543:/obj/machinery/networked/mainframe/proc/unload_program(datum/computer/file/mainframe_program/program)`: Stops one program instance, triggers its unload callback, and removes it from scheduler/process bookkeeping.
+- `568:/obj/machinery/networked/mainframe/proc/relay_progsignal(datum/computer/file/mainframe_program/caller_prog, progid, list/data, datum/computer/file/file)`: Internal IPC relay that forwards command payloads and optional file attachments between program IDs.
+- `579:/obj/machinery/networked/mainframe/proc/reconnect_all_devices()`: Bulk reconnection scan used by kernel and utilities to rebind driver endpoints after topology changes.
+- `590:/obj/machinery/networked/mainframe/proc/reconnect_device(device_id)`: Targeted reconnect for one device identifier, replacing stale links and reinitializing driver communication.
+- `606:/obj/machinery/networked/mainframe/proc/reboot_mainframe()`: Soft reboot orchestrator: tears down runtime programs then triggers a fresh system post sequence.
+- `613:/obj/machinery/networked/mainframe/proc/post_system()`: Boot entrypoint that instantiates/initializes the configured OS stack after hardware startup.
+
+### `code/modules/networks/computer3/mainframe2/programs/_program_parent.dm`
+- `52:/datum/computer/file/mainframe_program/proc/ensure_program()`: Liveness guard that confirms holder/master bindings are still valid before any program action executes.
+- `71:/datum/computer/file/mainframe_program/proc/input_text(text)`: Base text-input hook for program datums; subclasses override behavior while inheriting lifecycle safety checks.
+- `78:/datum/computer/file/mainframe_program/proc/initialize(initparams)`: One-time program startup callback invoked with spawn parameters from kernel/mainframe.
+- `86:/datum/computer/file/mainframe_program/proc/handle_quit()`: Standard exit routine for user-space programs that requests unload from the mainframe scheduler.
+- `90:/datum/computer/file/mainframe_program/proc/process()`: Default per-tick callback for schedulable programs; used as the baseline runtime contract.
+- `97:/datum/computer/file/mainframe_program/proc/parse_string(string, list/replace_list)`: Command preprocessing helper that applies variable substitutions before tokenization.
+- `149:/datum/computer/file/mainframe_program/proc/is_name_invalid(string)`: Filename/path component validator used to block invalid or unsafe names before filesystem mutations.
+- `163:/datum/computer/file/mainframe_program/proc/message_user(msg, render, file)`: Canonical user-output helper that emits terminal message packets through kernel/mainframe routing.
+- `176:/datum/computer/file/mainframe_program/proc/read_user_field(field)`: Reads user profile/account fields from backing records with refresh semantics.
+- `186:/datum/computer/file/mainframe_program/proc/write_user_field(field, data)`: Writes user profile/account fields and persists updates to the user data record.
+- `202:/datum/computer/file/mainframe_program/proc/signal_program(progid, list/data, datum/computer/file/file)`: Program-to-program signaling wrapper that sends command IDs and payload lists over DWAINE IPC.
+- `212:/datum/computer/file/mainframe_program/proc/receive_progsignal(sendid, list/data, datum/computer/file/file)`: Inbound IPC callback that programs override to react to command replies and asynchronous events.
+- `220:/datum/computer/file/mainframe_program/proc/check_read_permission(datum/computer/target, datum/mainframe2_user_data/user)`: ACL evaluation for read access based on owner/group/other bits and current user context.
+- `251:/datum/computer/file/mainframe_program/proc/check_write_permission(datum/computer/target, datum/mainframe2_user_data/user)`: ACL evaluation for write access, enforcing ownership/group constraints for file edits.
+- `284:/datum/computer/file/mainframe_program/proc/check_mode_permission(datum/computer/target, datum/mainframe2_user_data/user)`: ACL evaluation for metadata-changing operations such as chmod/chown-style updates.
+- `324:/proc/command2list(text, separator, list/replaceList, list/substitution_feedback_thing)`: Global tokenizer for shell-like command strings, handling separators, quoting, and substitution edge cases.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/_os_parent.dm`
+- `22:/datum/computer/file/mainframe_program/os/proc/term_input(data, termid, datum/computer/file/file)`: OS-level terminal input entrypoint called by kernel/mainframe when user keystrokes arrive.
+- `33:/datum/computer/file/mainframe_program/os/proc/message_term(message, termid, render)`: Sends rendered text output to a specific terminal session ID.
+- `43:/datum/computer/file/mainframe_program/os/proc/file_term(datum/computer/file/file, termid, exdata)`: Transfers a file payload to a terminal endpoint, including auxiliary metadata when needed.
+- `63:/datum/computer/file/mainframe_program/os/proc/parse_directory(string, datum/computer/folder/origin, create_if_missing, datum/mainframe2_user_data/user)`: Core absolute/relative path traversal routine for directory targets, with optional creation and permission enforcement.
+- `155:/datum/computer/file/mainframe_program/os/proc/parse_file_directory(string, datum/computer/folder/origin, create_if_missing, datum/mainframe2_user_data/user)`: Path resolver variant that expects a file target and separates parent folder resolution from final file lookup.
+- `236:/datum/computer/file/mainframe_program/os/proc/parse_datum_directory(string, datum/computer/folder/origin, create_if_missing, datum/mainframe2_user_data/user)`: Generic resolver that can return either file or folder datums for syscall and utility operations.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/bootloader.dm`
+- `44:/datum/computer/file/mainframe_program/os/bootloader/initialize()`: Resets bootloader state machine, scans memory banks/core records, and prepares first interactive boot stage.
+- `60:/datum/computer/file/mainframe_program/os/bootloader/process()`: Advances bootloader staging logic each tick until kernel handoff is complete or boot fails.
+- `116:/datum/computer/file/mainframe_program/os/bootloader/term_input(data, termid, datum/computer/file/file)`: Handles boot-time operator commands (selection/confirmation paths) from connected terminals.
+- `219:/datum/computer/file/mainframe_program/os/bootloader/proc/new_current()`: Rebuilds or rotates the active candidate bank list used by boot stage prompts.
+- `233:/datum/computer/file/mainframe_program/os/bootloader/proc/clear_core()`: Clears existing core/runtime file payloads to guarantee clean load conditions.
+- `246:/datum/computer/file/mainframe_program/os/bootloader/proc/disconnect_devices()`: Forcibly detaches connected devices before reboot/handoff so kernel can rebuild driver bindings cleanly.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/kernel.dm`
+- `57:/datum/computer/file/mainframe_program/os/kernel/initialize()`: Kernel bootstrap: builds syscall registry, seeds system folders, and initializes user/driver runtime structures.
+- `95:/datum/computer/file/mainframe_program/os/kernel/term_input(data, termid, datum/computer/file/file, is_break = FALSE)`: Primary per-terminal dispatch path, forwarding user input to session programs and handling break/file control packets.
+- `127:/datum/computer/file/mainframe_program/os/kernel/new_connection(datum/terminal_connection/conn, datum/computer/file/connect_file)`: Session onboarding path that allocates temporary user context and starts login/session programs for a new terminal.
+- `180:/datum/computer/file/mainframe_program/os/kernel/closed_connection(datum/terminal_connection/conn)`: Session teardown path that unwinds terminal bindings and logs users out when links drop.
+- `215:/datum/computer/file/mainframe_program/os/kernel/receive_progsignal(sendid, list/data, datum/computer/file/file)`: Kernel syscall dispatcher: interprets command IDs from programs and executes matching syscall handlers.
+- `231:/datum/computer/file/mainframe_program/os/kernel/process()`: Periodic kernel maintenance loop for driver pings, scan timers, and background runtime housekeeping.
+- `246:/datum/computer/file/mainframe_program/os/kernel/proc/initialize_users()`: Ensures account/home directory scaffolding exists and loads persistent user records into kernel state.
+- `301:/datum/computer/file/mainframe_program/os/kernel/proc/login_temp_user(user_netid, datum/computer/file/record/login_record, datum/computer/file/mainframe_program/caller_prog_override)`: Creates ephemeral pre-auth sessions tied to terminal net IDs for login workflows.
+- `330:/datum/computer/file/mainframe_program/os/kernel/proc/login_user(datum/mainframe2_user_data/account, user_name, sysop = FALSE, interactive = TRUE)`: Authenticates/attaches an account to a live session, assigns groups/privilege flags, and launches shell/login programs.
+- `407:/datum/computer/file/mainframe_program/os/kernel/proc/logout_user(datum/mainframe2_user_data/user, disconnect = FALSE)`: Ends one session, kills associated program tree, and optionally disconnects the terminal endpoint.
+- `421:/datum/computer/file/mainframe_program/os/kernel/proc/logout_all_users(disconnect = FALSE)`: Bulk session termination used during reboot/shutdown to leave no dangling user contexts.
+- `430:/datum/computer/file/mainframe_program/os/kernel/proc/initialize_drivers()`: Discovers and starts driver programs, then binds active devices into `/dev` and related kernel maps.
+- `489:/datum/computer/file/mainframe_program/os/kernel/proc/initialize_driver(datum/computer/file/mainframe_program/driver/driver, datum/computer/file/connect_file)`: Initializes one driver instance and performs validation/binding for its associated connect file.
+- `511:/datum/computer/file/mainframe_program/os/kernel/proc/is_sysop(datum/mainframe2_user_data/udat)`: Privilege predicate used by privileged operations to verify sysop authority.
+- `521:/datum/computer/file/mainframe_program/os/kernel/proc/change_metadata(datum/computer/file/file, field, newval)`: Controlled metadata mutator used by chmod/chown syscall paths to centralize file field updates.
+- `533:/datum/computer/file/mainframe_program/os/kernel/proc/message_all_users(message, sender_name, ignore_user_file_setting)`: Broadcast helper that sends a notice to all currently connected user sessions.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/confget.dm`
+- `4:/datum/dwaine_syscall/confget/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_CONFGET`: fetches named config records from `/conf` for callers.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/dget.dm`
+- `4:/datum/dwaine_syscall/dget/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_DGET`: resolves a driver/device ID from tags or driver naming data.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/dlist.dm`
+- `4:/datum/dwaine_syscall/dlist/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_DLIST`: enumerates available drivers/devices, optionally filtered by type/tag.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/dmsg.dm`
+- `4:/datum/dwaine_syscall/dmsg/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_DMSG`: sends a structured message packet to a target driver program.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/dscan.dm`
+- `4:/datum/dwaine_syscall/dscan/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_DSCAN`: triggers immediate device rescan/reconnect behavior.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/exit.dm`
+- `4:/datum/dwaine_syscall/exit/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_EXIT`: requests clean termination of the calling task.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/fget.dm`
+- `4:/datum/dwaine_syscall/fget/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_FGET`: resolves and returns filesystem targets from absolute/relative paths.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/fkill.dm`
+- `4:/datum/dwaine_syscall/fkill/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_FKILL`: deletes a file/folder target after mode/ownership checks.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/fmode.dm`
+- `4:/datum/dwaine_syscall/fmode/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_FMODE`: updates permission bitmasks on a filesystem target.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/fowner.dm`
+- `4:/datum/dwaine_syscall/fowner/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_FOWNER`: changes owner/group metadata on a filesystem target.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/fwrite.dm`
+- `4:/datum/dwaine_syscall/fwrite/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_FWRITE`: writes/replaces/appends file content and can create missing paths.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/mount.dm`
+- `4:/datum/dwaine_syscall/mount/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_MOUNT`: mounts a mountable driver/device into the filesystem tree.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/msg_term.dm`
+- `4:/datum/dwaine_syscall/msg_term/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_MSG_TERM`: sends text or file output to a terminal endpoint.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/tfork.dm`
+- `4:/datum/dwaine_syscall/tfork/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_TFORK`: forks/spawns a child task from the caller context.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/tkill.dm`
+- `4:/datum/dwaine_syscall/tkill/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_TKILL`: terminates a caller-owned child task by ID.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/tlist.dm`
+- `4:/datum/dwaine_syscall/tlist/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_TLIST`: returns the caller-owned task list and status metadata.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/tspawn.dm`
+- `4:/datum/dwaine_syscall/tspawn/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_TSPAWN`: executes an explicit program path as a new task.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/ugroup.dm`
+- `4:/datum/dwaine_syscall/ugroup/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_UGROUP`: updates active user group/session group metadata.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/uinput.dm`
+- `4:/datum/dwaine_syscall/uinput/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_UINPUT`: injects synthetic input into a user session terminal stream.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/ulist.dm`
+- `4:/datum/dwaine_syscall/ulist/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_ULIST`: returns the set of currently logged-in users/sessions.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/ulogin.dm`
+- `4:/datum/dwaine_syscall/ulogin/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_ULOGIN`: executes temp/full login logic and session attachment.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/kernel/syscalls/umsg.dm`
+- `4:/datum/dwaine_syscall/umsg/execute(sendid, list/data, datum/computer/file/file)`: Implements `DWAINE_COMMAND_UMSG`: sends direct user-to-user messages through kernel routing.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/login.dm`
+- `13:/datum/computer/file/mainframe_program/login/initialize()`: Starts login program state, requests MOTD/config data, and prints initial authentication prompts.
+- `26:/datum/computer/file/mainframe_program/login/receive_progsignal(sendid, list/data, datum/computer/file/record/file)`: Handles login-related replies (config/file delivery/session responses) and advances login interaction state.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell.dm`
+- `60:/datum/computer/file/mainframe_program/shell/initialize(list/supplied_config)`: Builds builtin/operator registries and applies shell startup configuration for the session.
+- `114:/datum/computer/file/mainframe_program/shell/process()`: Shell tick loop that advances script execution and deferred command state.
+- `121:/datum/computer/file/mainframe_program/shell/input_text(text)`: Parses command lines, handles pipelines, and enforces complexity/pipe limits before execution.
+- `243:/datum/computer/file/mainframe_program/shell/receive_progsignal(sendid, list/data, datum/computer/file/file)`: Consumes syscall replies and file-return events for active commands/scripts.
+- `275:/datum/computer/file/mainframe_program/shell/message_user(msg, render, file)`: Shell-level output wrapper that routes text/file replies back to the current terminal context.
+- `293:/datum/computer/file/mainframe_program/shell/proc/execpath(file_path, list/command_list, scripting = 0)`: Resolves executable paths, spawns utilities/tasks, and wires piping/scripting context into launch params.
+- `342:/datum/computer/file/mainframe_program/shell/proc/script_process()`: Drives queued script lines, handling control-flow state and fork/wait transitions.
+- `380:/datum/computer/file/mainframe_program/shell/proc/script_format(list/script_list)`: Normalizes script tokens/line structure before evaluation and execution.
+- `398:/datum/computer/file/mainframe_program/shell/proc/script_evaluate(list/token_stream, return_bool = FALSE)`: Stack-machine evaluator for script expressions with operator dispatch, bounds checks, and typed return behavior.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/break.dm`
+- `4:/datum/dwaine_shell_builtin/_break/execute(list/command_list, list/piped_list)`: Script control builtin that requests loop break semantics for the current script execution frame.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/echo.dm`
+- `4:/datum/dwaine_shell_builtin/echo/execute(list/command_list, list/piped_list)`: Writes literal/piped argument text to terminal output without spawning external utilities.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/else.dm`
+- `4:/datum/dwaine_shell_builtin/_else/execute(list/command_list, list/piped_list)`: Companion conditional builtin that inverts/continues branch execution based on prior `if` state.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/eval.dm`
+- `4:/datum/dwaine_shell_builtin/eval/execute(list/command_list, list/piped_list)`: Evaluates an inline shell expression and prints/returns the computed result.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/if.dm`
+- `4:/datum/dwaine_shell_builtin/_if/execute(list/command_list, list/piped_list)`: Evaluates a condition expression and sets shell script branch flags for conditional execution.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/logout.dm`
+- `4:/datum/dwaine_shell_builtin/logout/execute(list/command_list, list/piped_list)`: Ends the current session by signaling task/session termination through kernel commands.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/man.dm`
+- `4:/datum/dwaine_shell_builtin/man/execute(list/command_list, list/piped_list)`: Requests and prints command help/manual text through configuration/document retrieval paths.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/mesg.dm`
+- `4:/datum/dwaine_shell_builtin/mesg/execute(list/command_list, list/piped_list)`: Reads or updates per-user message preference fields used by inter-user chat notifications.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/talk.dm`
+- `4:/datum/dwaine_shell_builtin/talk/execute(list/command_list, list/piped_list)`: Interactive messaging builtin that sends directed user messages via `UMSG` command routing.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/while.dm`
+- `4:/datum/dwaine_shell_builtin/_while/execute(list/command_list, list/piped_list)`: Loop control builtin that evaluates loop predicates and maintains loop-context state bits.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_builtins/who.dm`
+- `4:/datum/dwaine_shell_builtin/who/execute(list/command_list, list/piped_list)`: Queries and displays the active user/session list from kernel (`ULIST`).
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/arithmetic/add.dm`
+- `10:/datum/dwaine_shell_script_operator/add/execute(list/token_stream)`: RPN arithmetic operator: pops two operands, adds them, clamps result, and pushes output back on stack.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/arithmetic/divide.dm`
+- `10:/datum/dwaine_shell_script_operator/divide/execute(list/token_stream)`: RPN arithmetic operator: divides operands with underflow/undefined guards (e.g., divide-by-zero handling).
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/arithmetic/rand.dm`
+- `10:/datum/dwaine_shell_script_operator/rand/execute(list/token_stream)`: RPN arithmetic operator: produces bounded random values from stack operands and pushes clamped output.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/file/exists.dm`
+- `11:/datum/dwaine_shell_script_operator/exists/execute(list/token_stream)`: Filesystem predicate operator: tests whether a path resolves to an existing datum and pushes boolean result.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/file/is_file.dm`
+- `11:/datum/dwaine_shell_script_operator/is_file/execute(list/token_stream)`: Filesystem predicate operator: tests whether resolved path target is a regular file object.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/logic/and.dm`
+- `11:/datum/dwaine_shell_script_operator/and/execute(list/token_stream)`: Logical operator: combines top stack values as boolean conjunction and pushes normalized truth value.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/logic/not.dm`
+- `10:/datum/dwaine_shell_script_operator/not/execute(list/token_stream)`: Logical unary operator: negates the top boolean-ish stack value and pushes result.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/misc/assignment.dm`
+- `8:/datum/dwaine_shell_script_operator/assignment/execute(list/token_stream)`: Script assignment operator: binds evaluated value into shell script variables/environment context.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/misc/escape_string.dm`
+- `12:/datum/dwaine_shell_script_operator/escape_string/execute(list/token_stream)`: String utility operator: unescapes encoded character sequences before further evaluation/use.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/misc/stack_pop.dm`
+- `11:/datum/dwaine_shell_script_operator/stack_pop/execute(list/token_stream)`: Stack utility operator: removes top item and exposes/prints it for script debugging/output flows.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/relational/eq.dm`
+- `10:/datum/dwaine_shell_script_operator/eq/execute(list/token_stream)`: Relational operator: compares two operands for equality and pushes boolean outcome.
+
+### `code/modules/networks/computer3/mainframe2/programs/os/shell/shell_script_operators/relational/gt.dm`
+- `12:/datum/dwaine_shell_script_operator/gt/execute(list/token_stream)`: Relational operator: compares whether left operand is greater than right operand.
+
+### `code/modules/networks/computer3/mainframe2/programs/utilities/_utility.dm`
+- `38:/proc/optparse(data)`: Global option parser used by multiple utilities to decode short/long flags and positional argument layouts.
+
+### `code/modules/networks/computer3/mainframe2/programs/utilities/cd.dm`
+- `4:/datum/computer/file/mainframe_program/utility/cd/initialize(initparams)`: Implements `cd` command startup: resolves requested path and updates session working directory state.
+- `24:/datum/computer/file/mainframe_program/utility/cd/proc/trim_path(filepath)`: Normalizes path strings (`.`/`..` cleanup) before writing final cwd back to user context.
+
+### `code/modules/networks/computer3/mainframe2/programs/utilities/chmod.dm`
+- `4:/datum/computer/file/mainframe_program/utility/chmod/initialize(initparams)`: Implements `chmod` command flow: parses mode arguments and issues metadata-change syscall requests.
+- `37:/datum/computer/file/mainframe_program/utility/chmod/proc/process_permissions(permissions)`: Parses symbolic/numeric permission specifications into DWAINE ACL bitmasks.
+
+### `code/modules/networks/computer3/mainframe2/programs/utilities/ls.dm`
+- `4:/datum/computer/file/mainframe_program/utility/ls/initialize(initparams)`: Implements `ls` command startup: resolves listing target and prepares directory/file output.
+- `48:/datum/computer/file/mainframe_program/utility/ls/proc/print_file_description(datum/computer/C)`: Formats one file entry with type/permission/owner metadata for terminal listing output.
+
+### `code/modules/networks/computer3/mainframe2/programs/utilities/mkdir.dm`
+- `4:/datum/computer/file/mainframe_program/utility/mkdir/initialize(initparams)`: Implements `mkdir` command flow, including path resolution and permission-gated directory creation.
+
+### `code/modules/networks/computer3/mainframe2/programs/utilities/mount.dm`
+- `4:/datum/computer/file/mainframe_program/utility/mount/initialize(initparams)`: Implements `mount` utility command, forwarding mount requests to kernel mount syscall.
+
+### `code/modules/networks/computer3/mainframe2/programs/utilities/rm.dm`
+- `12:/datum/computer/file/mainframe_program/utility/rm/initialize(initparams)`: Implements `rm` startup: parses flags/targets and schedules file deletion workflow.
+- `61:/datum/computer/file/mainframe_program/utility/rm/input_text(text)`: Interactive confirmation/input path for `rm` (used by prompt-driven deletes and follow-up actions).
+
+### `code/modules/networks/computer3/mainframe2/programs/utilities/su.dm`
+- `4:/datum/computer/file/mainframe_program/utility/su/initialize(initparams)`: Begins `su` authentication/target-user switch flow and prompts for required credentials.
+- `11:/datum/computer/file/mainframe_program/utility/su/receive_progsignal(sendid, list/data, datum/computer/file/file)`: Handles async replies during `su` flow (auth result/session update) and updates user messaging.
+- `33:/datum/computer/file/mainframe_program/utility/su/input_text(text)`: Consumes password/username interaction for `su` and drives transition between prompt states.
+
+### `code/modules/networks/computer3/mainframe2/programs/utilities/tar.dm`
+- `23:/datum/computer/file/mainframe_program/utility/tar/initialize(initparams)`: Entry for `tar` command; parses create/extract options and prepares recursive archive plan.
+- `173:/datum/computer/file/mainframe_program/utility/tar/receive_progsignal(sendid, list/data, datum/computer/file/file)`: Processes async syscall/task replies during archive create/extract operations.
+- `218:/datum/computer/file/mainframe_program/utility/tar/proc/recursive_list(datum/computer/target, current_path = "", depth = 0)`: Recursive traversal helper that enumerates nested filesystem tree contents for archive creation.
+- `233:/datum/computer/file/mainframe_program/utility/tar/proc/recursive_extract(datum/computer/to_extract, target_path, current_path = "", depth = 0)`: Recursive extraction helper that recreates archived tree structure at a target path.
+- `276:/datum/computer/file/mainframe_program/utility/tar/proc/deep_copy(datum/computer/to_copy, current_path = "", depth = 0)`: Recursive copy helper used by tar workflows to duplicate directory/file trees safely.
 
